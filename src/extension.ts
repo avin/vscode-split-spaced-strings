@@ -230,6 +230,147 @@ function mergeString(stringInfo: StringInfo): string {
 	return stringInfo.quote + content + stringInfo.quote;
 }
 
+/**
+ * Find which word the cursor is in and the offset within that word
+ */
+function getCursorWordPosition(stringInfo: StringInfo, cursorPosition: vscode.Position): { wordIndex: number; charOffset: number } | null {
+	const words = stringInfo.content.trim().split(/\s+/);
+	
+	// For single-line strings
+	if (!stringInfo.isMultiline) {
+		const contentStart = stringInfo.start.character + 1; // After opening quote
+		const cursorOffset = cursorPosition.character - contentStart;
+		const content = stringInfo.content.trim();
+		
+		// Build word positions in original content
+		let currentPos = 0;
+		const wordPositions: { start: number; end: number; index: number }[] = [];
+		
+		for (let i = 0; i < words.length; i++) {
+			const wordIndex = content.indexOf(words[i], currentPos);
+			if (wordIndex !== -1) {
+				wordPositions.push({
+					start: wordIndex,
+					end: wordIndex + words[i].length,
+					index: i
+				});
+				currentPos = wordIndex + words[i].length;
+			}
+		}
+		
+		// Check if cursor is inside a word
+		for (const wp of wordPositions) {
+			if (cursorOffset >= wp.start && cursorOffset <= wp.end) {
+				return { wordIndex: wp.index, charOffset: cursorOffset - wp.start };
+			}
+		}
+		
+		// Cursor is in a space - find nearest word boundary
+		for (let i = 0; i < wordPositions.length - 1; i++) {
+			const currentWordEnd = wordPositions[i].end;
+			const nextWordStart = wordPositions[i + 1].start;
+			
+			if (cursorOffset > currentWordEnd && cursorOffset < nextWordStart) {
+				// Cursor is between words - snap to nearest boundary
+				const distToCurrent = cursorOffset - currentWordEnd;
+				const distToNext = nextWordStart - cursorOffset;
+				
+				if (distToCurrent <= distToNext) {
+					// Closer to current word end
+					return { wordIndex: wordPositions[i].index, charOffset: words[wordPositions[i].index].length };
+				} else {
+					// Closer to next word start
+					return { wordIndex: wordPositions[i + 1].index, charOffset: 0 };
+				}
+			}
+		}
+		
+		// If cursor is before first word
+		if (wordPositions.length > 0 && cursorOffset < wordPositions[0].start) {
+			return { wordIndex: 0, charOffset: 0 };
+		}
+		
+		// If cursor is after all words, return last word end
+		if (words.length > 0) {
+			return { wordIndex: words.length - 1, charOffset: words[words.length - 1].length };
+		}
+	} else {
+		// For multi-line strings, find which line the cursor is on
+		// We need to check the actual document lines, not the content lines
+		for (let lineOffset = 0; lineOffset <= stringInfo.end.line - stringInfo.start.line; lineOffset++) {
+			const actualLine = stringInfo.start.line + lineOffset;
+			if (actualLine === cursorPosition.line) {
+				// Get the actual line text from the document
+				const lineText = stringInfo.content.split('\n')[lineOffset] || '';
+				const trimmedLine = lineText.trim();
+				
+				if (trimmedLine.length > 0) {
+					// Find which word this is
+					const wordIndex = words.indexOf(trimmedLine);
+					if (wordIndex !== -1) {
+						// Calculate cursor offset within the trimmed word
+						const trimStart = lineText.length - lineText.trimStart().length;
+						const charOffset = Math.max(0, Math.min(cursorPosition.character - trimStart, trimmedLine.length));
+						return { wordIndex, charOffset };
+					}
+				}
+				break;
+			}
+		}
+	}
+	
+	return null;
+}
+
+/**
+ * Calculate new cursor position after transformation
+ */
+function calculateNewCursorPosition(
+	stringInfo: StringInfo, 
+	newText: string, 
+	wordPosition: { wordIndex: number; charOffset: number } | null,
+	wasMultiline: boolean
+): vscode.Position {
+	if (!wordPosition) {
+		return stringInfo.start;
+	}
+	
+	const words = stringInfo.content.trim().split(/\s+/);
+	if (wordPosition.wordIndex >= words.length) {
+		return stringInfo.start;
+	}
+	
+	const targetWord = words[wordPosition.wordIndex];
+	
+	// If converting to multiline
+	if (!wasMultiline) {
+		// Find the line with the target word
+		const lines = newText.split('\n');
+		for (let i = 0; i < lines.length; i++) {
+			if (lines[i].trim() === targetWord) {
+				const line = stringInfo.start.line + i;
+				const lineText = lines[i];
+				const trimStart = lineText.length - lineText.trimStart().length;
+				const character = trimStart + Math.min(wordPosition.charOffset, targetWord.length);
+				return new vscode.Position(line, character);
+			}
+		}
+	} else {
+		// Converting to single line
+		// Calculate position in merged string
+		const contentStart = stringInfo.start.character + 1; // After opening quote
+		let offset = 0;
+		for (let i = 0; i < wordPosition.wordIndex; i++) {
+			offset += words[i].length + 1; // word + space
+		}
+		offset += Math.min(wordPosition.charOffset, targetWord.length);
+		
+		return new vscode.Position(stringInfo.start.line, contentStart + offset);
+	}
+	
+	return stringInfo.start;
+}
+
 // This method is called when your extension is activated
 // Your extension is activated the very first time the command is executed
 export function activate(context: vscode.ExtensionContext) {
@@ -255,6 +396,10 @@ export function activate(context: vscode.ExtensionContext) {
 			return;
 		}
 
+		// Save cursor position relative to word
+		const wordPosition = getCursorWordPosition(stringInfo, position);
+		const wasMultiline = stringInfo.isMultiline;
+
 		// Determine if we should split or merge
 		const newText = stringInfo.isMultiline 
 			? mergeString(stringInfo) 
@@ -265,6 +410,10 @@ export function activate(context: vscode.ExtensionContext) {
 			const range = new vscode.Range(stringInfo.start, stringInfo.end);
 			editBuilder.replace(range, newText);
 		});
+
+		// Restore cursor position
+		const newCursorPosition = calculateNewCursorPosition(stringInfo, newText, wordPosition, wasMultiline);
+		editor.selection = new vscode.Selection(newCursorPosition, newCursorPosition);
 	});
 
 	context.subscriptions.push(disposable);

@@ -2,6 +2,8 @@
 
 Toggle between single-line and multi-line string formats with a simple keyboard shortcut. Perfect for working with CSS classes, particularly Tailwind CSS, and improving code readability.
 
+![Demo](images/demo.gif)
+
 ## Features
 
 - **Smart String Detection**: Automatically detects if your cursor is inside a string literal (single quotes, double quotes, or template literals)

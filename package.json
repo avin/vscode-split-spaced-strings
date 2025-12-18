@@ -2,7 +2,7 @@
   "name": "split-spaced-strings",
   "displayName": "split-spaced-strings",
   "description": "Toggle single-line to multi-line string formats",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "publisher": "c75",
   "icon": "icon.png",
   "repository": {
