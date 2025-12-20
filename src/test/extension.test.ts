@@ -669,6 +669,44 @@ suite('Split Spaced Strings Test Suite', () => {
 			await config.update('autoCollapseOnSave', false, vscode.ConfigurationTarget.Global);
 		});
 
+		test('Should clear decorations after auto-collapse on save', async function() {
+			this.timeout(5000);
+			
+			const config = vscode.workspace.getConfiguration('splitSpacedStrings');
+			await config.update('autoCollapseOnSave', true, vscode.ConfigurationTarget.Global);
+
+			const input = 'const x = "one two three";';
+			
+			document = await vscode.workspace.openTextDocument({
+				content: input,
+				language: 'typescript'
+			});
+			editor = await vscode.window.showTextDocument(document);
+
+			const position = new vscode.Position(0, 15);
+			editor.selection = new vscode.Selection(position, position);
+			await vscode.commands.executeCommand('split-spaced-strings.toggleSplit');
+
+			const rangesAfterSplit = __test__.getLastDecorationRanges();
+			assert.ok(rangesAfterSplit.length > 0, 'Should add decorations after split');
+
+			const edits = __test__.applyAutoCollapseOnSave(editor.document, editor);
+			assert.ok(edits.length > 0, 'Should generate edits for auto-collapse');
+
+			await editor.edit(editBuilder => {
+				for (const edit of edits) {
+					editBuilder.replace(edit.range, edit.newText);
+				}
+			});
+
+			await new Promise(resolve => setTimeout(resolve, 50));
+
+			const rangesAfterCollapse = __test__.getLastDecorationRanges();
+			assert.strictEqual(rangesAfterCollapse.length, 0, 'Should clear decorations after auto-collapse');
+
+			await config.update('autoCollapseOnSave', false, vscode.ConfigurationTarget.Global);
+		});
+
 		test('Should NOT auto-collapse when setting is disabled', async function() {
 			this.timeout(5000);
 			

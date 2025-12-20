@@ -3,11 +3,13 @@ import { calculateNewCursorPosition, getCursorWordPosition } from './cursor';
 import { findStringAtCursor } from './parsing';
 import { mergeString, splitString } from './splitMerge';
 import {
+	applyAutoCollapseOnSave,
 	clearAllTrackedStrings,
 	clearTrackedStringsForUri,
 	collapseTrackedStrings,
 	createDecorationType,
 	findTrackedStringMatch,
+	getLastDecorationRanges,
 	trackString,
 	untrackString,
 	updateDecorations,
@@ -88,10 +90,9 @@ export function activate(context: vscode.ExtensionContext) {
 			return;
 		}
 
-		const edits = collapseTrackedStrings(event.document);
+		const edits = applyAutoCollapseOnSave(event.document, vscode.window.activeTextEditor);
 		if (edits.length > 0) {
 			event.waitUntil(Promise.resolve(edits));
-			clearTrackedStringsForUri(event.document.uri.toString());
 		}
 	});
 
@@ -140,5 +141,7 @@ export function deactivate() {
 }
 
 export const __test__ = {
-	collapseTrackedStrings
+	applyAutoCollapseOnSave,
+	collapseTrackedStrings,
+	getLastDecorationRanges
 };

@@ -5,6 +5,7 @@ import { StringInfo, TrackedString } from './types';
 
 const trackedStrings = new Map<string, TrackedString[]>();
 let decorationType: vscode.TextEditorDecorationType | null = null;
+let lastDecorationRanges: vscode.Range[] = [];
 
 export function createDecorationType(): vscode.TextEditorDecorationType {
 	decorationType = vscode.window.createTextEditorDecorationType({
@@ -93,6 +94,7 @@ export function untrackString(document: vscode.TextDocument, stringInfo: StringI
 
 export function updateDecorations(editor: vscode.TextEditor): void {
 	if (!decorationType) {
+		lastDecorationRanges = [];
 		return;
 	}
 
@@ -103,6 +105,7 @@ export function updateDecorations(editor: vscode.TextEditor): void {
 	}));
 
 	editor.setDecorations(decorationType, decorations);
+	lastDecorationRanges = decorations.map(decoration => decoration.range);
 }
 
 function findTrackedStringsInDocument(document: vscode.TextDocument): StringInfo[] {
@@ -187,6 +190,27 @@ export function clearTrackedStringsForUri(uri: string): void {
 
 export function clearAllTrackedStrings(): void {
 	trackedStrings.clear();
+}
+
+export function applyAutoCollapseOnSave(
+	document: vscode.TextDocument,
+	editor: vscode.TextEditor | undefined
+): vscode.TextEdit[] {
+	const edits = collapseTrackedStrings(document);
+	if (edits.length > 0) {
+		clearTrackedStringsForUri(document.uri.toString());
+		if (editor && editor.document === document) {
+			setTimeout(() => {
+				updateDecorations(editor);
+			}, 0);
+		}
+	}
+
+	return edits;
+}
+
+export function getLastDecorationRanges(): vscode.Range[] {
+	return lastDecorationRanges;
 }
 
 export function updateTrackedStringsOnDocumentChange(
