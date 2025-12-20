@@ -1556,6 +1556,162 @@ suite('Split Spaced Strings Test Suite', () => {
 			assert.ok(text.includes('items-center'), 'Should have split content');
 		});
 
+		test('TSX: Should keep double quotes in multiline JSX attributes', async function() {
+			this.timeout(5000);
+
+			const input = [
+				'const Demo = () => (',
+				'  <div',
+				'    className="flex flex-col md:flex-row items-center justify-between gap-4 p-6 md:p-8 foo bg-white"',
+				'  >',
+				'    ok',
+				'  </div>',
+				');'
+			].join('\n');
+			
+			document = await vscode.workspace.openTextDocument({
+				content: input,
+				language: 'typescriptreact'
+			});
+			editor = await vscode.window.showTextDocument(document);
+
+			const lines = input.split('\n');
+			const classLineIndex = lines.findIndex(l => l.includes('className='));
+			const quoteIndex = lines[classLineIndex].indexOf('"');
+			const position = new vscode.Position(classLineIndex, quoteIndex + 5);
+			editor.selection = new vscode.Selection(position, position);
+			await vscode.commands.executeCommand('split-spaced-strings.toggleSplit');
+			await new Promise(resolve => setTimeout(resolve, 200));
+
+			const text = editor.document.getText();
+			assert.ok(text.includes('className="'), 'Should keep double quotes for multiline JSX attribute');
+			assert.ok(!text.includes('`'), 'Should not use backticks for multiline JSX attribute');
+		});
+
+		test('TSX: Should keep double quotes after expression attributes in multiline tags', async function() {
+			this.timeout(5000);
+
+			const input = [
+				'const Demo = () => (',
+				'  <Button',
+				'    onClick={() => console.log("clicked")}',
+				'    className="one two three"',
+				'  />',
+				');'
+			].join('\n');
+			
+			document = await vscode.workspace.openTextDocument({
+				content: input,
+				language: 'typescriptreact'
+			});
+			editor = await vscode.window.showTextDocument(document);
+
+			const lines = input.split('\n');
+			const classLineIndex = lines.findIndex(l => l.includes('className='));
+			const quoteIndex = lines[classLineIndex].indexOf('"');
+			const position = new vscode.Position(classLineIndex, quoteIndex + 5);
+			editor.selection = new vscode.Selection(position, position);
+			await vscode.commands.executeCommand('split-spaced-strings.toggleSplit');
+			await new Promise(resolve => setTimeout(resolve, 200));
+
+			const text = editor.document.getText();
+			assert.ok(text.includes('className="'), 'Should keep double quotes after expression attributes');
+			assert.ok(!text.includes('`'), 'Should not use backticks after expression attributes');
+		});
+
+		test('JSX: Should keep double quotes in multiline JSX attributes', async function() {
+			this.timeout(5000);
+
+			const input = [
+				'const Demo = () => (',
+				'  <div',
+				'    className="flex flex-col md:flex-row items-center justify-between gap-4 p-6 md:p-8 foo bg-white"',
+				'  >',
+				'    ok',
+				'  </div>',
+				');'
+			].join('\n');
+			
+			document = await vscode.workspace.openTextDocument({
+				content: input,
+				language: 'javascriptreact'
+			});
+			editor = await vscode.window.showTextDocument(document);
+
+			const lines = input.split('\n');
+			const classLineIndex = lines.findIndex(l => l.includes('className='));
+			const quoteIndex = lines[classLineIndex].indexOf('"');
+			const position = new vscode.Position(classLineIndex, quoteIndex + 5);
+			editor.selection = new vscode.Selection(position, position);
+			await vscode.commands.executeCommand('split-spaced-strings.toggleSplit');
+			await new Promise(resolve => setTimeout(resolve, 200));
+
+			const text = editor.document.getText();
+			assert.ok(text.includes('className="'), 'Should keep double quotes for JSX attribute');
+			assert.ok(!text.includes('`'), 'Should not use backticks in JSX attribute');
+		});
+
+		test('TSX: Should keep double quotes when attribute value is on next line', async function() {
+			this.timeout(5000);
+
+			const input = [
+				'const Demo = () => (',
+				'  <div',
+				'    className=',
+				'      "one two three"',
+				'  >',
+				'    ok',
+				'  </div>',
+				');'
+			].join('\n');
+			
+			document = await vscode.workspace.openTextDocument({
+				content: input,
+				language: 'typescriptreact'
+			});
+			editor = await vscode.window.showTextDocument(document);
+
+			const lines = input.split('\n');
+			const valueLineIndex = lines.findIndex(l => l.includes('"one two three"'));
+			const quoteIndex = lines[valueLineIndex].indexOf('"');
+			const position = new vscode.Position(valueLineIndex, quoteIndex + 5);
+			editor.selection = new vscode.Selection(position, position);
+			await vscode.commands.executeCommand('split-spaced-strings.toggleSplit');
+			await new Promise(resolve => setTimeout(resolve, 200));
+
+			const text = editor.document.getText();
+			assert.ok(text.includes('"'), 'Should keep double quotes for multiline value');
+			assert.ok(!text.includes('`'), 'Should not use backticks for multiline value');
+		});
+
+		test('TSX: Should use backticks inside JSX expression attributes', async function() {
+			this.timeout(5000);
+
+			const input = [
+				'const Demo = () => (',
+				'  <div className={"one two three"} />',
+				');'
+			].join('\n');
+			
+			document = await vscode.workspace.openTextDocument({
+				content: input,
+				language: 'typescriptreact'
+			});
+			editor = await vscode.window.showTextDocument(document);
+
+			const lines = input.split('\n');
+			const classLineIndex = lines.findIndex(l => l.includes('className='));
+			const oneIndex = lines[classLineIndex].indexOf('one');
+			const position = new vscode.Position(classLineIndex, oneIndex + 1);
+			editor.selection = new vscode.Selection(position, position);
+			await vscode.commands.executeCommand('split-spaced-strings.toggleSplit');
+			await new Promise(resolve => setTimeout(resolve, 200));
+
+			const text = editor.document.getText();
+			assert.ok(text.includes('`'), 'Should use backticks inside JSX expression attribute');
+			assert.ok(text.includes('className={'), 'Should keep JSX expression wrapper');
+		});
+
 		test('TSX: Should use backticks outside JSX attributes', async function() {
 			this.timeout(5000);
 
