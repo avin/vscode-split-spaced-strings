@@ -2,7 +2,7 @@
   "name": "split-spaced-strings",
   "displayName": "Split Spaced Strings",
   "description": "Toggle single-line to multi-line string formats",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "publisher": "c75",
   "icon": "icon.png",
   "repository": {
@@ -31,7 +31,18 @@
         "mac": "alt+shift+s",
         "when": "editorTextFocus"
       }
-    ]
+    ],
+    "configuration": {
+      "type": "object",
+      "title": "Split Spaced Strings",
+      "properties": {
+        "splitSpacedStrings.autoCollapseOnSave": {
+          "type": "boolean",
+          "default": false,
+          "description": "Automatically collapse split strings back to single line when saving the file"
+        }
+      }
+    }
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",

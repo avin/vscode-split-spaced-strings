@@ -10,6 +10,20 @@ interface StringInfo {
 	isMultiline: boolean;
 }
 
+interface TrackedString {
+	uri: string;
+	startLine: number;
+	endLine: number;
+	quote: string;
+	content: string;
+	// Hash to identify the string even after document changes
+	contentHash: string;
+}
+
+// Global tracking of split strings
+const trackedStrings = new Map<string, TrackedString[]>();
+let decorationType: vscode.TextEditorDecorationType;
+
 /**
  * Find the string literal at the cursor position
  */
@@ -371,6 +385,169 @@ function calculateNewCursorPosition(
 	return stringInfo.start;
 }
 
+/**
+ * Add a string to the tracked strings list
+ */
+function trackString(document: vscode.TextDocument, stringInfo: StringInfo) {
+	const uri = document.uri.toString();
+	if (!trackedStrings.has(uri)) {
+		trackedStrings.set(uri, []);
+	}
+	
+	const tracked = trackedStrings.get(uri)!;
+	
+	// Remove any EXACT match (same start/end line) - this prevents duplicates
+	// Don't remove non-overlapping strings - they are independent split strings
+	const filtered = tracked.filter(t => 
+		!(t.startLine === stringInfo.start.line && t.endLine === stringInfo.end.line)
+	);
+	
+	// Create a simple hash from the content for tracking
+	const contentHash = stringInfo.content.trim().replace(/\s+/g, ' ');
+	
+	// Add the new tracked string
+	filtered.push({
+		uri,
+		startLine: stringInfo.start.line,
+		endLine: stringInfo.end.line,
+		quote: stringInfo.quote,
+		content: stringInfo.content,
+		contentHash
+	});
+	
+	trackedStrings.set(uri, filtered);
+	
+	console.log('[Split Spaced Strings] Now tracking', filtered.length, 'strings in document');
+}
+
+/**
+ * Remove a string from tracking
+ */
+function untrackString(document: vscode.TextDocument, stringInfo: StringInfo) {
+	const uri = document.uri.toString();
+	const tracked = trackedStrings.get(uri);
+	if (!tracked) {
+		return;
+	}
+	
+	// Remove the string at this position
+	const filtered = tracked.filter(t => 
+		t.startLine !== stringInfo.start.line || t.endLine !== stringInfo.end.line
+	);
+	
+	if (filtered.length === 0) {
+		trackedStrings.delete(uri);
+	} else {
+		trackedStrings.set(uri, filtered);
+	}
+}
+
+/**
+ * Update decorations for tracked strings
+ */
+function updateDecorations(editor: vscode.TextEditor) {
+	if (!decorationType) {
+		return;
+	}
+	
+	// Find actual multiline strings in the document that match tracked ones
+	const strings = findTrackedStringsInDocument(editor.document);
+	
+	const decorations: vscode.DecorationOptions[] = strings.map(s => ({
+		range: new vscode.Range(s.start.line, 0, s.end.line, Number.MAX_VALUE),
+		hoverMessage: 'This string will be collapsed to single line on save (if auto-collapse is enabled)'
+	}));
+	
+	editor.setDecorations(decorationType, decorations);
+}
+
+/**
+ * Find all multiline strings in document that match tracked strings
+ */
+function findTrackedStringsInDocument(document: vscode.TextDocument): StringInfo[] {
+	const uri = document.uri.toString();
+	const tracked = trackedStrings.get(uri);
+	if (!tracked || tracked.length === 0) {
+		return [];
+	}
+	
+	const result: StringInfo[] = [];
+	const foundHashes = new Set<string>();
+	
+	// For each tracked string, find it in the document by exact hash match
+	for (const t of tracked) {
+		// Validate position is still valid
+		if (t.startLine >= document.lineCount || t.endLine >= document.lineCount) {
+			continue;
+		}
+		
+		try {
+			const startLine = document.lineAt(t.startLine);
+			const endLine = document.lineAt(t.endLine);
+			const startQuotePos = startLine.text.indexOf(t.quote);
+			const endQuotePos = endLine.text.lastIndexOf(t.quote);
+			
+			if (startQuotePos === -1 || endQuotePos === -1) {
+				continue;
+			}
+			
+			// Extract current content
+			let content = '';
+			for (let lineNum = t.startLine; lineNum <= t.endLine; lineNum++) {
+				const lineText = document.lineAt(lineNum).text;
+				if (lineNum === t.startLine && lineNum === t.endLine) {
+					content = lineText.substring(startQuotePos + 1, endQuotePos);
+				} else if (lineNum === t.startLine) {
+					content = lineText.substring(startQuotePos + 1) + '\n';
+				} else if (lineNum === t.endLine) {
+					content += lineText.substring(0, endQuotePos);
+				} else {
+					content += lineText + '\n';
+				}
+			}
+			
+			// Verify it's still multiline and matches tracked hash
+			const currentHash = content.trim().replace(/\s+/g, ' ');
+			if ((t.startLine !== t.endLine || content.includes('\n')) && 
+			    currentHash === t.contentHash && 
+			    !foundHashes.has(currentHash)) {
+				result.push({
+					start: new vscode.Position(t.startLine, startQuotePos),
+					end: new vscode.Position(t.endLine, endQuotePos + 1),
+					quote: t.quote,
+					content,
+					isMultiline: true
+				});
+				foundHashes.add(currentHash);
+			}
+		} catch (e) {
+			// Skip invalid positions
+			continue;
+		}
+	}
+	
+	return result;
+}
+
+/**
+ * Collapse all tracked strings in document
+ */
+function collapseTrackedStrings(document: vscode.TextDocument): vscode.TextEdit[] {
+	const strings = findTrackedStringsInDocument(document);
+	const edits: vscode.TextEdit[] = [];
+	
+	// Process from bottom to top to avoid position shifts
+	strings.sort((a, b) => b.start.line - a.start.line);
+	
+	for (const stringInfo of strings) {
+		const newText = mergeString(stringInfo);
+		const range = new vscode.Range(stringInfo.start, stringInfo.end);
+		edits.push(vscode.TextEdit.replace(range, newText));
+	}
+	
+	return edits;
+}
+
 // This method is called when your extension is activated
 // Your extension is activated the very first time the command is executed
 export function activate(context: vscode.ExtensionContext) {
@@ -378,6 +555,15 @@ export function activate(context: vscode.ExtensionContext) {
 	// Use the console to output diagnostic information (console.log) and errors (console.error)
 	// This line of code will only be executed once when your extension is activated
 	console.log('Extension "split-spaced-strings" is now active!');
+
+	// Create decoration type for tracked strings
+	decorationType = vscode.window.createTextEditorDecorationType({
+		backgroundColor: 'rgba(255, 200, 0, 0.1)',
+		border: '1px solid rgba(255, 200, 0, 0.3)',
+		isWholeLine: true,
+		overviewRulerColor: 'rgba(255, 200, 0, 0.5)',
+		overviewRulerLane: vscode.OverviewRulerLane.Right
+	});
 
 	// Register the toggle command
 	const disposable = vscode.commands.registerCommand('split-spaced-strings.toggleSplit', async () => {
@@ -406,18 +592,191 @@ export function activate(context: vscode.ExtensionContext) {
 			: splitString(stringInfo, document);
 
 		// Replace the string
-		await editor.edit(editBuilder => {
+		const editSuccess = await editor.edit(editBuilder => {
 			const range = new vscode.Range(stringInfo.start, stringInfo.end);
 			editBuilder.replace(range, newText);
 		});
+
+		// Update tracking after edit is applied (only if auto-collapse is enabled)
+		if (editSuccess) {
+			const config = vscode.workspace.getConfiguration('splitSpacedStrings');
+			const autoCollapse = config.get<boolean>('autoCollapseOnSave', false);
+			
+			if (autoCollapse) {
+				if (wasMultiline) {
+					// Was multiline, now single line - untrack it
+					console.log('[Split Spaced Strings] Untracking string (merged to single line)');
+					untrackString(document, stringInfo);
+				} else {
+					// Was single line, now multiline - track it
+					// The document is now updated, find the string at the start position
+					const searchPosition = new vscode.Position(stringInfo.start.line, stringInfo.start.character + 1);
+					const newStringInfo = findStringAtCursor(document, searchPosition);
+					if (newStringInfo && newStringInfo.isMultiline) {
+						console.log('[Split Spaced Strings] Tracking new split string at lines', newStringInfo.start.line, '-', newStringInfo.end.line);
+						trackString(document, newStringInfo);
+					} else {
+						console.log('[Split Spaced Strings] Warning: Could not find multiline string after split');
+					}
+				}
+
+				// Update decorations
+				updateDecorations(editor);
+			}
+		}
 
 		// Restore cursor position
 		const newCursorPosition = calculateNewCursorPosition(stringInfo, newText, wordPosition, wasMultiline);
 		editor.selection = new vscode.Selection(newCursorPosition, newCursorPosition);
 	});
 
-	context.subscriptions.push(disposable);
+	// Register save handler
+	const saveDisposable = vscode.workspace.onWillSaveTextDocument(event => {
+		const config = vscode.workspace.getConfiguration('splitSpacedStrings');
+		const autoCollapse = config.get<boolean>('autoCollapseOnSave', false);
+		
+		console.log('[Split Spaced Strings] Save event triggered, autoCollapse:', autoCollapse);
+		
+		if (!autoCollapse) {
+			return;
+		}
+
+		const uri = event.document.uri.toString();
+		const tracked = trackedStrings.get(uri);
+		console.log('[Split Spaced Strings] Tracked strings for document:', tracked?.length || 0);
+
+		const edits = collapseTrackedStrings(event.document);
+		console.log('[Split Spaced Strings] Generated edits:', edits.length);
+		
+		if (edits.length > 0) {
+			event.waitUntil(Promise.resolve(edits));
+			
+			// Clear tracking for this document after collapse
+			trackedStrings.delete(event.document.uri.toString());
+			console.log('[Split Spaced Strings] Cleared tracking for document');
+		}
+	});
+
+	// Register document close handler to clean up tracking
+	const closeDisposable = vscode.workspace.onDidCloseTextDocument(document => {
+		trackedStrings.delete(document.uri.toString());
+	});
+
+	// Register active editor change handler to update decorations
+	const editorChangeDisposable = vscode.window.onDidChangeActiveTextEditor(editor => {
+		const config = vscode.workspace.getConfiguration('splitSpacedStrings');
+		const autoCollapse = config.get<boolean>('autoCollapseOnSave', false);
+		
+		if (editor && autoCollapse) {
+			updateDecorations(editor);
+		}
+	});
+
+	// Register text document change handler to update tracking
+	const documentChangeDisposable = vscode.workspace.onDidChangeTextDocument(event => {
+		const config = vscode.workspace.getConfiguration('splitSpacedStrings');
+		const autoCollapse = config.get<boolean>('autoCollapseOnSave', false);
+		
+		if (!autoCollapse) {
+			return; // Skip tracking updates if feature is disabled
+		}
+		
+		const editor = vscode.window.activeTextEditor;
+		if (editor && editor.document === event.document) {
+		const uri = event.document.uri.toString();
+			const tracked = trackedStrings.get(uri);
+			
+			if (tracked && tracked.length > 0) {
+				// Update positions and content hashes based on text changes
+				for (const change of event.contentChanges) {
+					const lineDelta = change.text.split('\n').length - 1 - (change.range.end.line - change.range.start.line);
+					
+					// Update all tracked strings based on where the change occurred
+					for (const t of tracked) {
+						// Change is completely before the tracked string - shift both boundaries
+						if (change.range.end.line < t.startLine) {
+							t.startLine += lineDelta;
+							t.endLine += lineDelta;
+						}
+						// Change starts before or at start, and ends before or at end (overlaps or inside)
+						else if (change.range.start.line <= t.endLine && change.range.end.line >= t.startLine) {
+							// Change affects the tracked string - update end boundary
+							// This handles: Enter inside string, edits at boundaries, etc.
+							if (change.range.start.line >= t.startLine) {
+								// Change is inside or at the end of tracked string
+								t.endLine += lineDelta;
+							} else {
+								// Change starts before and extends into tracked string
+								t.startLine += lineDelta;
+								t.endLine += lineDelta;
+							}
+						}
+					}
+				}
+				
+				// Now update content hashes for all tracked strings
+				for (const t of tracked) {
+					if (t.startLine >= event.document.lineCount || t.endLine >= event.document.lineCount) {
+						continue;
+					}
+					
+					// Re-read the actual content from document
+					try {
+						const startLine = event.document.lineAt(t.startLine);
+						const endLine = event.document.lineAt(t.endLine);
+						const startQuotePos = startLine.text.indexOf(t.quote);
+						const endQuotePos = endLine.text.lastIndexOf(t.quote);
+						
+						if (startQuotePos !== -1 && endQuotePos !== -1) {
+							let content = '';
+							for (let lineNum = t.startLine; lineNum <= t.endLine; lineNum++) {
+								const lineText = event.document.lineAt(lineNum).text;
+								if (lineNum === t.startLine && lineNum === t.endLine) {
+									content = lineText.substring(startQuotePos + 1, endQuotePos);
+								} else if (lineNum === t.startLine) {
+									content = lineText.substring(startQuotePos + 1) + '\n';
+								} else if (lineNum === t.endLine) {
+									content += lineText.substring(0, endQuotePos);
+								} else {
+									content += lineText + '\n';
+								}
+							}
+							
+							// Update the hash with actual current content
+							t.content = content;
+							t.contentHash = content.trim().replace(/\s+/g, ' ');
+						}
+					} catch (e) {
+						// Line might be out of bounds, will be filtered out later
+					}
+				}
+			}
+			
+			// Update decorations after a short delay to allow for multi-cursor edits
+			setTimeout(() => {
+				updateDecorations(editor);
+			}, 100);
+		}
+	});
+
+	// Update decorations for current editor
+	const config = vscode.workspace.getConfiguration('splitSpacedStrings');
+	const autoCollapse = config.get<boolean>('autoCollapseOnSave', false);
+	if (vscode.window.activeTextEditor && autoCollapse) {
+		updateDecorations(vscode.window.activeTextEditor);
+	}
+
+	context.subscriptions.push(
+		disposable,
+		saveDisposable,
+		closeDisposable,
+		editorChangeDisposable,
+		documentChangeDisposable,
+		decorationType
+	);
 }
 
 // This method is called when your extension is deactivated
-export function deactivate() {}
+export function deactivate() {
+	trackedStrings.clear();
+}

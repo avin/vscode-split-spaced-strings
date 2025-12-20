@@ -11,6 +11,8 @@ Toggle between single-line and multi-line string formats with a simple keyboard 
 - **Word-Per-Line Splitting**: Each word in the string gets its own line for better readability
 - **Preserves Indentation**: Maintains proper code indentation when splitting strings
 - **Reversible**: Toggle back and forth as many times as needed
+- **Auto-Collapse on Save**: Optional feature to automatically collapse split strings back to single line when saving (disabled by default)
+- **Visual Tracking**: Split strings are highlighted with a subtle background color to indicate they will be auto-collapsed on save
 
 ## Use Cases
 
@@ -37,6 +39,28 @@ Press `Alt+Shift+S` with your cursor inside any string literal.
 1. Go to `File` → `Preferences` → `Keyboard Shortcuts` (or press `Ctrl+K Ctrl+S`)
 2. Search for "Toggle Split/Merge String"
 3. Click on the current keybinding and assign your preferred shortcut
+
+## Settings
+
+### Auto-Collapse on Save
+
+By default, split strings remain in their multi-line format. However, you can enable automatic collapsing back to single line when saving the file:
+
+1. Open Settings (`Ctrl+,` or `Cmd+,`)
+2. Search for "Split Spaced Strings"
+3. Enable "Auto Collapse On Save"
+
+Or add to your `settings.json`:
+```json
+{
+  "splitSpacedStrings.autoCollapseOnSave": true
+}
+```
+
+When enabled:
+- Any string you split using `Alt+Shift+S` will be highlighted with a subtle yellow background
+- When you save the file (`Ctrl+S`), all highlighted strings will automatically collapse back to single line
+- This is useful for temporary formatting while editing, ensuring committed code stays compact
 
 ## Example
 ```tsx
