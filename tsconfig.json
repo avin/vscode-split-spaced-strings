@@ -16,6 +16,7 @@
 	},
 	"exclude": [
 		"test-autocollapse.tsx",
+		"test-enter-debug.ts",
 		"node_modules"
 	]
 }

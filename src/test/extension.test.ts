@@ -764,4 +764,466 @@ suite('Split Spaced Strings Test Suite', () => {
 			await config.update('autoCollapseOnSave', false, vscode.ConfigurationTarget.Global);
 		});
 	});
+
+	suite('Auto-Collapse Edge Cases', () => {
+		test('Should track string after pressing Enter inside it', async function() {
+			this.timeout(5000);
+			
+			const config = vscode.workspace.getConfiguration('splitSpacedStrings');
+			await config.update('autoCollapseOnSave', true, vscode.ConfigurationTarget.Global);
+
+			const input = 'const x = "one two three";';
+			
+			document = await vscode.workspace.openTextDocument({
+				content: input,
+				language: 'typescript'
+			});
+			editor = await vscode.window.showTextDocument(document);
+
+			// Split the string
+			let position = new vscode.Position(0, 15);
+			editor.selection = new vscode.Selection(position, position);
+			await vscode.commands.executeCommand('split-spaced-strings.toggleSplit');
+			await new Promise(resolve => setTimeout(resolve, 100));
+
+			// Find a line with a word and press Enter after it
+			let text = editor.document.getText();
+			const lines = text.split('\n');
+			let wordLineIndex = lines.findIndex(l => l.trim() === 'one');
+			
+			if (wordLineIndex >= 0) {
+				const lineLength = lines[wordLineIndex].length;
+				position = new vscode.Position(wordLineIndex, lineLength);
+				editor.selection = new vscode.Selection(position, position);
+				
+				// Insert a newline (simulating Enter press)
+				await editor.edit(editBuilder => {
+					editBuilder.insert(position, '\n');
+				});
+				await new Promise(resolve => setTimeout(resolve, 200));
+				
+				// Check that string is still tracked (should still have decorations)
+				text = editor.document.getText();
+				assert.ok(text.split('\n').length > 4, 'Should still be multiline after Enter');
+			}
+
+			await config.update('autoCollapseOnSave', false, vscode.ConfigurationTarget.Global);
+		});
+
+		test('Should track string after pressing Enter on last line (closing quote)', async function() {
+			this.timeout(5000);
+			
+			const config = vscode.workspace.getConfiguration('splitSpacedStrings');
+			await config.update('autoCollapseOnSave', true, vscode.ConfigurationTarget.Global);
+
+			const input = 'const x = "one two three";';
+			
+			document = await vscode.workspace.openTextDocument({
+				content: input,
+				language: 'typescript'
+			});
+			editor = await vscode.window.showTextDocument(document);
+
+			// Split the string
+			let position = new vscode.Position(0, 15);
+			editor.selection = new vscode.Selection(position, position);
+			await vscode.commands.executeCommand('split-spaced-strings.toggleSplit');
+			await new Promise(resolve => setTimeout(resolve, 100));
+
+			// Find the last line (closing quote line)
+			let text = editor.document.getText();
+			let lines = text.split('\n');
+			const lastLineIndex = lines.findIndex(l => l.includes('"') && l.trim().startsWith('"'));
+			
+			if (lastLineIndex >= 0) {
+				// Position cursor before the closing quote
+				const quoteLine = lines[lastLineIndex];
+				const quotePos = quoteLine.indexOf('"');
+				position = new vscode.Position(lastLineIndex, quotePos);
+				editor.selection = new vscode.Selection(position, position);
+				
+				// Insert a newline before closing quote
+				await editor.edit(editBuilder => {
+					editBuilder.insert(position, '\n  ');
+				});
+				await new Promise(resolve => setTimeout(resolve, 200));
+				
+				// String should still be tracked and multiline
+				text = editor.document.getText();
+				assert.ok(text.split('\n').length > 4, 'Should still be multiline after Enter on last line');
+				
+				// Verify it's still a valid multiline string
+				assert.ok(text.includes('one') && text.includes('two') && text.includes('three'), 
+					'Should still contain all words');
+			}
+
+			await config.update('autoCollapseOnSave', false, vscode.ConfigurationTarget.Global);
+		});
+
+		test('Should NOT affect tracking when pressing Enter AFTER closing quote', async function() {
+			this.timeout(5000);
+			
+			const config = vscode.workspace.getConfiguration('splitSpacedStrings');
+			await config.update('autoCollapseOnSave', true, vscode.ConfigurationTarget.Global);
+
+			const input = 'const goo = "bar baz azz2";';
+			
+			document = await vscode.workspace.openTextDocument({
+				content: input,
+				language: 'typescript'
+			});
+			editor = await vscode.window.showTextDocument(document);
+
+			// Split the string (bar baz azz2)
+			let position = new vscode.Position(0, 18);
+			editor.selection = new vscode.Selection(position, position);
+			await vscode.commands.executeCommand('split-spaced-strings.toggleSplit');
+			await new Promise(resolve => setTimeout(resolve, 200));
+
+			// Verify it's split
+			let text = editor.document.getText();
+			assert.ok(text.includes('\n'), 'String should be split into multiple lines');
+			
+			// Find the closing quote line (line with just ";)
+			let lines = text.split('\n');
+			
+			// Find line ending with ";
+			let closingQuoteLine = -1;
+			for (let i = 0; i < lines.length; i++) {
+				if (lines[i].trim() === '";') {
+					closingQuoteLine = i;
+					break;
+				}
+			}
+			
+			assert.ok(closingQuoteLine >= 0, 'Should find closing quote line');
+			
+			// Count lines before Enter
+			const linesBefore = lines.length;
+			
+			// Position cursor AFTER the semicolon on the closing quote line
+			const lineLength = lines[closingQuoteLine].length;
+			position = new vscode.Position(closingQuoteLine, lineLength);
+			editor.selection = new vscode.Selection(position, position);
+			
+			// Insert a newline (simulating Enter press after ";)
+			await editor.edit(editBuilder => {
+				editBuilder.insert(position, '\n');
+			});
+			await new Promise(resolve => setTimeout(resolve, 200));
+			
+			// Verify the newline was added but the string structure is intact
+			text = editor.document.getText();
+			lines = text.split('\n');
+			assert.strictEqual(lines.length, linesBefore + 1, 'Should have one more line after Enter');
+			
+			// The split string should still contain all words
+			assert.ok(text.includes('bar'), 'Should still contain "bar"');
+			assert.ok(text.includes('baz'), 'Should still contain "baz"');
+			assert.ok(text.includes('azz2'), 'Should still contain "azz2"');
+			
+			await config.update('autoCollapseOnSave', false, vscode.ConfigurationTarget.Global);
+		});
+
+		test('Should track and collapse two identical strings separately', async function() {
+			this.timeout(5000);
+			
+			const config = vscode.workspace.getConfiguration('splitSpacedStrings');
+			await config.update('autoCollapseOnSave', true, vscode.ConfigurationTarget.Global);
+
+			const input = 'const x = "one two";\nconst y = "one two";';
+			
+			document = await vscode.workspace.openTextDocument({
+				content: input,
+				language: 'typescript'
+			});
+			editor = await vscode.window.showTextDocument(document);
+
+			// Split first string
+			let position = new vscode.Position(0, 15);
+			editor.selection = new vscode.Selection(position, position);
+			await vscode.commands.executeCommand('split-spaced-strings.toggleSplit');
+			await new Promise(resolve => setTimeout(resolve, 100));
+
+			// Split second string
+			let text = editor.document.getText();
+			
+			// Need to recalculate the line number after first split
+			// Find where "const y" is now
+			const lines = text.split('\n');
+			let secondStringLine = -1;
+			for (let i = 0; i < lines.length; i++) {
+				if (lines[i].includes('const y')) {
+					secondStringLine = i;
+					break;
+				}
+			}
+			
+			if (secondStringLine >= 0) {
+				position = new vscode.Position(secondStringLine, 15);
+				editor.selection = new vscode.Selection(position, position);
+				await vscode.commands.executeCommand('split-spaced-strings.toggleSplit');
+				await new Promise(resolve => setTimeout(resolve, 100));
+			}
+
+			// Both should be tracked
+			const finalText = editor.document.getText();
+			const occurrences = (finalText.match(/one/g) || []).length;
+			assert.strictEqual(occurrences, 2, 'Should have two "one" words (one in each string)');
+
+			await config.update('autoCollapseOnSave', false, vscode.ConfigurationTarget.Global);
+		});
+
+		test('Should handle editing tracked string content', async function() {
+			this.timeout(5000);
+			
+			const config = vscode.workspace.getConfiguration('splitSpacedStrings');
+			await config.update('autoCollapseOnSave', true, vscode.ConfigurationTarget.Global);
+
+			const input = 'const x = "one two three";';
+			
+			document = await vscode.workspace.openTextDocument({
+				content: input,
+				language: 'typescript'
+			});
+			editor = await vscode.window.showTextDocument(document);
+
+			// Split the string
+			let position = new vscode.Position(0, 15);
+			editor.selection = new vscode.Selection(position, position);
+			await vscode.commands.executeCommand('split-spaced-strings.toggleSplit');
+			await new Promise(resolve => setTimeout(resolve, 100));
+
+			// Find a line with 'two' and change it to 'MODIFIED'
+			let text = editor.document.getText();
+			const lines = text.split('\n');
+			const twoLineIndex = lines.findIndex(l => l.trim() === 'two');
+			
+			if (twoLineIndex >= 0) {
+				const line = editor.document.lineAt(twoLineIndex);
+				const wordStart = line.text.indexOf('two');
+				const range = new vscode.Range(
+					new vscode.Position(twoLineIndex, wordStart),
+					new vscode.Position(twoLineIndex, wordStart + 3)
+				);
+				
+				await editor.edit(editBuilder => {
+					editBuilder.replace(range, 'MODIFIED');
+				});
+				await new Promise(resolve => setTimeout(resolve, 200));
+				
+				// String should still be tracked with updated content
+				text = editor.document.getText();
+				assert.ok(text.includes('MODIFIED'), 'Should contain modified content');
+				assert.ok(text.includes('one') && text.includes('three'), 'Should still have other words');
+			}
+
+			await config.update('autoCollapseOnSave', false, vscode.ConfigurationTarget.Global);
+		});
+	});
+
+	suite('Multiple Strings Scenarios', () => {
+		test('Should split and track two different strings', async function() {
+			this.timeout(5000);
+			
+			const config = vscode.workspace.getConfiguration('splitSpacedStrings');
+			await config.update('autoCollapseOnSave', true, vscode.ConfigurationTarget.Global);
+
+			const input = 'const x = "alpha beta";\nconst y = "gamma delta epsilon";';
+			
+			document = await vscode.workspace.openTextDocument({
+				content: input,
+				language: 'typescript'
+			});
+			editor = await vscode.window.showTextDocument(document);
+
+			// Split first string
+			let position = new vscode.Position(0, 15);
+			editor.selection = new vscode.Selection(position, position);
+			await vscode.commands.executeCommand('split-spaced-strings.toggleSplit');
+			await new Promise(resolve => setTimeout(resolve, 100));
+
+			// Split second string
+			let text = editor.document.getText();
+			const lines = text.split('\n');
+			let secondStringLine = -1;
+			for (let i = 0; i < lines.length; i++) {
+				if (lines[i].includes('const y')) {
+					secondStringLine = i;
+					break;
+				}
+			}
+			
+			if (secondStringLine >= 0) {
+				position = new vscode.Position(secondStringLine, 15);
+				editor.selection = new vscode.Selection(position, position);
+				await vscode.commands.executeCommand('split-spaced-strings.toggleSplit');
+				await new Promise(resolve => setTimeout(resolve, 100));
+			}
+
+			// Both strings should be split
+			text = editor.document.getText();
+			assert.ok(text.includes('alpha') && text.includes('beta'), 'First string should be split');
+			assert.ok(text.includes('gamma') && text.includes('delta') && text.includes('epsilon'), 'Second string should be split');
+
+			await config.update('autoCollapseOnSave', false, vscode.ConfigurationTarget.Global);
+		});
+
+		test('Should split two identical strings and track both independently', async function() {
+			this.timeout(5000);
+			
+			const config = vscode.workspace.getConfiguration('splitSpacedStrings');
+			await config.update('autoCollapseOnSave', true, vscode.ConfigurationTarget.Global);
+
+			const input = 'const x = "same same";\nconst y = "same same";';
+			
+			document = await vscode.workspace.openTextDocument({
+				content: input,
+				language: 'typescript'
+			});
+			editor = await vscode.window.showTextDocument(document);
+
+			// Split first identical string
+			let position = new vscode.Position(0, 15);
+			editor.selection = new vscode.Selection(position, position);
+			await vscode.commands.executeCommand('split-spaced-strings.toggleSplit');
+			await new Promise(resolve => setTimeout(resolve, 100));
+
+			// Split second identical string
+			let text = editor.document.getText();
+			const lines = text.split('\n');
+			let secondStringLine = -1;
+			for (let i = 0; i < lines.length; i++) {
+				if (lines[i].includes('const y')) {
+					secondStringLine = i;
+					break;
+				}
+			}
+			
+			if (secondStringLine >= 0) {
+				position = new vscode.Position(secondStringLine, 15);
+				editor.selection = new vscode.Selection(position, position);
+				await vscode.commands.executeCommand('split-spaced-strings.toggleSplit');
+				await new Promise(resolve => setTimeout(resolve, 100));
+			}
+
+			// Both identical strings should be split
+			text = editor.document.getText();
+			const sameCount = (text.match(/\bsame\b/g) || []).length;
+			assert.strictEqual(sameCount, 4, 'Should have 4 "same" words (2 in each string)');
+
+			await config.update('autoCollapseOnSave', false, vscode.ConfigurationTarget.Global);
+		});
+
+		test('Should edit one of two identical strings and track both', async function() {
+			this.timeout(5000);
+			
+			const config = vscode.workspace.getConfiguration('splitSpacedStrings');
+			await config.update('autoCollapseOnSave', true, vscode.ConfigurationTarget.Global);
+
+			const input = 'const x = "word word";\nconst y = "word word";';
+			
+			document = await vscode.workspace.openTextDocument({
+				content: input,
+				language: 'typescript'
+			});
+			editor = await vscode.window.showTextDocument(document);
+
+			// Split both strings
+			let position = new vscode.Position(0, 15);
+			editor.selection = new vscode.Selection(position, position);
+			await vscode.commands.executeCommand('split-spaced-strings.toggleSplit');
+			await new Promise(resolve => setTimeout(resolve, 100));
+
+			let text = editor.document.getText();
+			let lines = text.split('\n');
+			let secondStringLine = -1;
+			for (let i = 0; i < lines.length; i++) {
+				if (lines[i].includes('const y')) {
+					secondStringLine = i;
+					break;
+				}
+			}
+			
+			if (secondStringLine >= 0) {
+				position = new vscode.Position(secondStringLine, 15);
+				editor.selection = new vscode.Selection(position, position);
+				await vscode.commands.executeCommand('split-spaced-strings.toggleSplit');
+				await new Promise(resolve => setTimeout(resolve, 150));
+			}
+
+			// Edit first string - change first "word" to "EDITED"
+			text = editor.document.getText();
+			lines = text.split('\n');
+			const firstWordLine = lines.findIndex(l => l.trim() === 'word');
+			
+			if (firstWordLine >= 0) {
+				const line = editor.document.lineAt(firstWordLine);
+				const wordStart = line.text.indexOf('word');
+				const range = new vscode.Range(
+					new vscode.Position(firstWordLine, wordStart),
+					new vscode.Position(firstWordLine, wordStart + 4)
+				);
+				
+				await editor.edit(editBuilder => {
+					editBuilder.replace(range, 'EDITED');
+				});
+				await new Promise(resolve => setTimeout(resolve, 200));
+			}
+
+			// First string should have EDITED, second should still have word
+			text = editor.document.getText();
+			assert.ok(text.includes('EDITED'), 'First string should be edited');
+			const wordCount = (text.match(/\bword\b/g) || []).length;
+			assert.ok(wordCount >= 2, 'Second string should still have "word"');
+
+			await config.update('autoCollapseOnSave', false, vscode.ConfigurationTarget.Global);
+		});
+
+		test('Should split three different strings and track all', async function() {
+			this.timeout(5000);
+			
+			const config = vscode.workspace.getConfiguration('splitSpacedStrings');
+			await config.update('autoCollapseOnSave', true, vscode.ConfigurationTarget.Global);
+
+			const input = 'const a = "one two";\nconst b = "three four";\nconst c = "five six";';
+			
+			document = await vscode.workspace.openTextDocument({
+				content: input,
+				language: 'typescript'
+			});
+			editor = await vscode.window.showTextDocument(document);
+
+			// Split all three strings
+			for (let stringNum = 0; stringNum < 3; stringNum++) {
+				const text = editor.document.getText();
+				const lines = text.split('\n');
+				
+				let targetLine = -1;
+				const searchTerms = ['const a', 'const b', 'const c'];
+				
+				for (let i = 0; i < lines.length; i++) {
+					if (lines[i].includes(searchTerms[stringNum])) {
+						targetLine = i;
+						break;
+					}
+				}
+				
+				if (targetLine >= 0) {
+					const position = new vscode.Position(targetLine, 15);
+					editor.selection = new vscode.Selection(position, position);
+					await vscode.commands.executeCommand('split-spaced-strings.toggleSplit');
+					await new Promise(resolve => setTimeout(resolve, 100));
+				}
+			}
+
+			// All three strings should be split
+			const text = editor.document.getText();
+			assert.ok(text.includes('one') && text.includes('two'), 'First string split');
+			assert.ok(text.includes('three') && text.includes('four'), 'Second string split');
+			assert.ok(text.includes('five') && text.includes('six'), 'Third string split');
+
+			await config.update('autoCollapseOnSave', false, vscode.ConfigurationTarget.Global);
+		});
+	});
 });

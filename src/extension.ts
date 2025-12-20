@@ -416,8 +416,6 @@ function trackString(document: vscode.TextDocument, stringInfo: StringInfo) {
 	});
 	
 	trackedStrings.set(uri, filtered);
-	
-	console.log('[Split Spaced Strings] Now tracking', filtered.length, 'strings in document');
 }
 
 /**
@@ -472,9 +470,8 @@ function findTrackedStringsInDocument(document: vscode.TextDocument): StringInfo
 	}
 	
 	const result: StringInfo[] = [];
-	const foundHashes = new Set<string>();
 	
-	// For each tracked string, find it in the document by exact hash match
+	// For each tracked string, find it in the document by position and hash
 	for (const t of tracked) {
 		// Validate position is still valid
 		if (t.startLine >= document.lineCount || t.endLine >= document.lineCount) {
@@ -482,10 +479,26 @@ function findTrackedStringsInDocument(document: vscode.TextDocument): StringInfo
 		}
 		
 		try {
-			const startLine = document.lineAt(t.startLine);
-			const endLine = document.lineAt(t.endLine);
-			const startQuotePos = startLine.text.indexOf(t.quote);
-			const endQuotePos = endLine.text.lastIndexOf(t.quote);
+			const startLineText = document.lineAt(t.startLine).text;
+			const endLineText = document.lineAt(t.endLine).text;
+			
+			// Find opening quote (first occurrence of quote type)
+			let startQuotePos = -1;
+			for (let i = 0; i < startLineText.length; i++) {
+				if (startLineText[i] === t.quote) {
+					startQuotePos = i;
+					break;
+				}
+			}
+			
+			// Find closing quote (last occurrence of quote type)
+			let endQuotePos = -1;
+			for (let i = endLineText.length - 1; i >= 0; i--) {
+				if (endLineText[i] === t.quote) {
+					endQuotePos = i;
+					break;
+				}
+			}
 			
 			if (startQuotePos === -1 || endQuotePos === -1) {
 				continue;
@@ -509,8 +522,7 @@ function findTrackedStringsInDocument(document: vscode.TextDocument): StringInfo
 			// Verify it's still multiline and matches tracked hash
 			const currentHash = content.trim().replace(/\s+/g, ' ');
 			if ((t.startLine !== t.endLine || content.includes('\n')) && 
-			    currentHash === t.contentHash && 
-			    !foundHashes.has(currentHash)) {
+			    currentHash === t.contentHash) {
 				result.push({
 					start: new vscode.Position(t.startLine, startQuotePos),
 					end: new vscode.Position(t.endLine, endQuotePos + 1),
@@ -518,7 +530,6 @@ function findTrackedStringsInDocument(document: vscode.TextDocument): StringInfo
 					content,
 					isMultiline: true
 				});
-				foundHashes.add(currentHash);
 			}
 		} catch (e) {
 			// Skip invalid positions
@@ -605,7 +616,6 @@ export function activate(context: vscode.ExtensionContext) {
 			if (autoCollapse) {
 				if (wasMultiline) {
 					// Was multiline, now single line - untrack it
-					console.log('[Split Spaced Strings] Untracking string (merged to single line)');
 					untrackString(document, stringInfo);
 				} else {
 					// Was single line, now multiline - track it
@@ -613,10 +623,7 @@ export function activate(context: vscode.ExtensionContext) {
 					const searchPosition = new vscode.Position(stringInfo.start.line, stringInfo.start.character + 1);
 					const newStringInfo = findStringAtCursor(document, searchPosition);
 					if (newStringInfo && newStringInfo.isMultiline) {
-						console.log('[Split Spaced Strings] Tracking new split string at lines', newStringInfo.start.line, '-', newStringInfo.end.line);
 						trackString(document, newStringInfo);
-					} else {
-						console.log('[Split Spaced Strings] Warning: Could not find multiline string after split');
 					}
 				}
 
@@ -635,25 +642,17 @@ export function activate(context: vscode.ExtensionContext) {
 		const config = vscode.workspace.getConfiguration('splitSpacedStrings');
 		const autoCollapse = config.get<boolean>('autoCollapseOnSave', false);
 		
-		console.log('[Split Spaced Strings] Save event triggered, autoCollapse:', autoCollapse);
-		
 		if (!autoCollapse) {
 			return;
 		}
 
-		const uri = event.document.uri.toString();
-		const tracked = trackedStrings.get(uri);
-		console.log('[Split Spaced Strings] Tracked strings for document:', tracked?.length || 0);
-
 		const edits = collapseTrackedStrings(event.document);
-		console.log('[Split Spaced Strings] Generated edits:', edits.length);
 		
 		if (edits.length > 0) {
 			event.waitUntil(Promise.resolve(edits));
 			
 			// Clear tracking for this document after collapse
 			trackedStrings.delete(event.document.uri.toString());
-			console.log('[Split Spaced Strings] Cleared tracking for document');
 		}
 	});
 
@@ -693,10 +692,38 @@ export function activate(context: vscode.ExtensionContext) {
 					
 					// Update all tracked strings based on where the change occurred
 					for (const t of tracked) {
+						// For changes on the end line, we need to check if they're inside the string
+						// by comparing character positions with the closing quote position
+						let isChangeAfterString = false;
+						if (change.range.start.line === t.endLine && change.range.end.line === t.endLine) {
+							// Find the closing quote position on this line
+							try {
+								const endLineText = event.document.lineAt(t.endLine).text;
+								let endQuotePos = -1;
+								for (let i = endLineText.length - 1; i >= 0; i--) {
+									if (endLineText[i] === t.quote) {
+										endQuotePos = i;
+										break;
+									}
+								}
+								
+								// If change starts after the closing quote, it's outside the string
+								if (endQuotePos !== -1 && change.range.start.character > endQuotePos) {
+									isChangeAfterString = true;
+								}
+							} catch (e) {
+								// Ignore errors, treat as inside string
+							}
+						}
+						
 						// Change is completely before the tracked string - shift both boundaries
 						if (change.range.end.line < t.startLine) {
 							t.startLine += lineDelta;
 							t.endLine += lineDelta;
+						}
+						// Change is after the string on the same end line - don't affect the string
+						else if (isChangeAfterString) {
+							// Do nothing - change is after the closing quote
 						}
 						// Change starts before or at start, and ends before or at end (overlaps or inside)
 						else if (change.range.start.line <= t.endLine && change.range.end.line >= t.startLine) {
@@ -722,32 +749,59 @@ export function activate(context: vscode.ExtensionContext) {
 					
 					// Re-read the actual content from document
 					try {
-						const startLine = event.document.lineAt(t.startLine);
-						const endLine = event.document.lineAt(t.endLine);
-						const startQuotePos = startLine.text.indexOf(t.quote);
-						const endQuotePos = endLine.text.lastIndexOf(t.quote);
+						// Find the opening quote on the start line
+						const startLineText = event.document.lineAt(t.startLine).text;
+						let startQuotePos = -1;
 						
-						if (startQuotePos !== -1 && endQuotePos !== -1) {
-							let content = '';
-							for (let lineNum = t.startLine; lineNum <= t.endLine; lineNum++) {
-								const lineText = event.document.lineAt(lineNum).text;
-								if (lineNum === t.startLine && lineNum === t.endLine) {
-									content = lineText.substring(startQuotePos + 1, endQuotePos);
-								} else if (lineNum === t.startLine) {
-									content = lineText.substring(startQuotePos + 1) + '\n';
-								} else if (lineNum === t.endLine) {
-									content += lineText.substring(0, endQuotePos);
-								} else {
-									content += lineText + '\n';
-								}
+						// Search for quote position, preferring positions near where we expect it
+						for (let i = 0; i < startLineText.length; i++) {
+							if (startLineText[i] === t.quote) {
+								startQuotePos = i;
+								break;
 							}
-							
-							// Update the hash with actual current content
-							t.content = content;
-							t.contentHash = content.trim().replace(/\s+/g, ' ');
 						}
+						
+						if (startQuotePos === -1) {
+							continue;
+						}
+						
+						// Find the closing quote on the end line
+						const endLineText = event.document.lineAt(t.endLine).text;
+						let endQuotePos = -1;
+						
+						// Search backwards for the closing quote
+						for (let i = endLineText.length - 1; i >= 0; i--) {
+							if (endLineText[i] === t.quote) {
+								endQuotePos = i;
+								break;
+							}
+						}
+						
+						if (endQuotePos === -1) {
+							continue;
+						}
+						
+						// Extract the content between quotes
+						let content = '';
+						for (let lineNum = t.startLine; lineNum <= t.endLine; lineNum++) {
+							const lineText = event.document.lineAt(lineNum).text;
+							if (lineNum === t.startLine && lineNum === t.endLine) {
+								content = lineText.substring(startQuotePos + 1, endQuotePos);
+							} else if (lineNum === t.startLine) {
+								content = lineText.substring(startQuotePos + 1) + '\n';
+							} else if (lineNum === t.endLine) {
+								content += lineText.substring(0, endQuotePos);
+							} else {
+								content += lineText + '\n';
+							}
+						}
+						
+						// Update the hash with actual current content
+						t.content = content;
+						t.contentHash = content.trim().replace(/\s+/g, ' ');
 					} catch (e) {
 						// Line might be out of bounds, will be filtered out later
+						console.log('[Split Spaced Strings] Error updating tracked string:', e);
 					}
 				}
 			}
