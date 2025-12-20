@@ -1,5 +1,6 @@
 import * as assert from 'assert';
 import * as vscode from 'vscode';
+import { __test__ } from '../extension';
 
 suite('Split Spaced Strings Test Suite', () => {
 	vscode.window.showInformationMessage('Start all tests.');
@@ -106,6 +107,14 @@ suite('Split Spaced Strings Test Suite', () => {
 			const result = await testToggle(input, 1, 5);
 			
 			assert.ok(result.includes('class-one class-two class-three'), 'Should merge words with spaces');
+			assert.strictEqual(result.split('\n').length, 1, 'Should be on single line');
+		});
+
+		test('Should handle escaped backticks in multiline template literal', async () => {
+			const input = 'const x = `\n  hello \\`world\\`\n  test\n`;';
+			const result = await testToggle(input, 2, 3);
+			
+			assert.ok(result.includes('hello \\`world\\` test'), 'Should preserve escaped backticks on merge');
 			assert.strictEqual(result.split('\n').length, 1, 'Should be on single line');
 		});
 	});
@@ -317,6 +326,31 @@ suite('Split Spaced Strings Test Suite', () => {
 			await testCursorPosition(input, 0, 25, 's'); // Cursor at 's' in "test"
 		});
 
+		test('Should preserve cursor position on repeated words when splitting', async () => {
+			const input = 'const x = "same same other";';
+			
+			document = await vscode.workspace.openTextDocument({
+				content: input,
+				language: 'typescript'
+			});
+			editor = await vscode.window.showTextDocument(document);
+
+			// Cursor inside the second "same"
+			const position = new vscode.Position(0, 17);
+			editor.selection = new vscode.Selection(position, position);
+
+			await vscode.commands.executeCommand('split-spaced-strings.toggleSplit');
+
+			const newPosition = editor.selection.active;
+			const lines = editor.document.getText().split('\n');
+			const sameLines = lines
+				.map((line, index) => (line.trim() === 'same' ? index : -1))
+				.filter(index => index >= 0);
+
+			assert.ok(sameLines.length >= 2, 'Should have repeated word lines');
+			assert.strictEqual(newPosition.line, sameLines[1], 'Cursor should be on second repeated word');
+		});
+
 		test('Should preserve cursor position when merging from multiline', async () => {
 			const input = `const x = "
   hello
@@ -344,6 +378,37 @@ suite('Split Spaced Strings Test Suite', () => {
 			));
 
 			assert.strictEqual(charAtCursor, 'o', 'Cursor should remain at "o" in "world"');
+		});
+
+		test('Should preserve cursor position on repeated words when merging', async () => {
+			const input = `const x = "
+  same
+  same
+  other
+";`;
+			
+			document = await vscode.workspace.openTextDocument({
+				content: input,
+				language: 'typescript'
+			});
+			editor = await vscode.window.showTextDocument(document);
+
+			// Cursor inside the second "same"
+			const position = new vscode.Position(2, 3);
+			editor.selection = new vscode.Selection(position, position);
+
+			await vscode.commands.executeCommand('split-spaced-strings.toggleSplit');
+
+			const newPosition = editor.selection.active;
+			const mergedLine = editor.document.lineAt(newPosition.line).text;
+			const firstIndex = mergedLine.indexOf('same');
+			const secondIndex = mergedLine.indexOf('same', firstIndex + 1);
+
+			assert.ok(secondIndex > firstIndex, 'Should find second occurrence of repeated word');
+			assert.ok(
+				newPosition.character >= secondIndex && newPosition.character < secondIndex + 4,
+				'Cursor should be on second repeated word'
+			);
 		});
 
 		test('Should handle cursor at space between words when splitting', async () => {
@@ -808,6 +873,44 @@ suite('Split Spaced Strings Test Suite', () => {
 				text = editor.document.getText();
 				assert.ok(text.split('\n').length > 4, 'Should still be multiline after Enter');
 			}
+
+			await config.update('autoCollapseOnSave', false, vscode.ConfigurationTarget.Global);
+		});
+
+		test('Should collapse only tracked string when multiple strings are on the same line', async function() {
+			this.timeout(5000);
+			
+			const config = vscode.workspace.getConfiguration('splitSpacedStrings');
+			await config.update('autoCollapseOnSave', true, vscode.ConfigurationTarget.Global);
+
+			const input = 'const a = "one two"; const b = "three four";';
+			
+			document = await vscode.workspace.openTextDocument({
+				content: input,
+				language: 'typescript'
+			});
+			editor = await vscode.window.showTextDocument(document);
+
+			// Split only the second string
+			const position = new vscode.Position(0, 33);
+			editor.selection = new vscode.Selection(position, position);
+			await vscode.commands.executeCommand('split-spaced-strings.toggleSplit');
+			await new Promise(resolve => setTimeout(resolve, 100));
+
+			// Collapse tracked strings via internal helper
+			const edits = __test__.collapseTrackedStrings(editor.document);
+			assert.strictEqual(edits.length, 1, 'Should generate one collapse edit');
+			
+			await editor.edit(editBuilder => {
+				for (const edit of edits) {
+					editBuilder.replace(edit.range, edit.newText);
+				}
+			});
+
+			const text = editor.document.getText();
+			assert.ok(!text.includes('\n'), 'Should remain single-line after collapse');
+			assert.ok(text.includes('const a = "one two";'), 'First string should remain intact');
+			assert.ok(text.includes('const b = "three four";'), 'Second string should be collapsed correctly');
 
 			await config.update('autoCollapseOnSave', false, vscode.ConfigurationTarget.Global);
 		});
@@ -1415,6 +1518,27 @@ suite('Split Spaced Strings Test Suite', () => {
 			assert.ok(text.includes('items-center'), 'Should have split content');
 		});
 
+		test('TSX: Should use backticks outside JSX attributes', async function() {
+			this.timeout(5000);
+
+			const input = 'const ok = foo < bar ? "one two" : "three four";';
+			
+			document = await vscode.workspace.openTextDocument({
+				content: input,
+				language: 'typescriptreact'
+			});
+			editor = await vscode.window.showTextDocument(document);
+
+			const position = new vscode.Position(0, 25);
+			editor.selection = new vscode.Selection(position, position);
+			await vscode.commands.executeCommand('split-spaced-strings.toggleSplit');
+			await new Promise(resolve => setTimeout(resolve, 200));
+
+			const text = editor.document.getText();
+			assert.ok(text.includes('`'), 'Should use backticks when not in JSX attributes');
+			assert.ok(!text.includes('"one'), 'Should not keep double quotes in non-JSX context');
+		});
+
 		test('Python: Should convert single quotes to triple quotes on split', async function() {
 			this.timeout(5000);
 
@@ -1432,8 +1556,8 @@ suite('Split Spaced Strings Test Suite', () => {
 			await new Promise(resolve => setTimeout(resolve, 200));
 
 			const text = editor.document.getText();
-			// Python simplified: keeps regular quotes (Python allows multiline in regular quotes)
-			assert.ok(text.split('\n').length > 1, 'Should split into multiple lines');
+			assert.ok(text.includes('"""'), 'Should use triple quotes for multiline in Python');
+			assert.ok(!text.includes("'hello"), 'Should not keep single quotes around content');
 			assert.ok(text.includes('hello'), 'Should contain content');
 		});
 
@@ -1455,8 +1579,7 @@ suite('Split Spaced Strings Test Suite', () => {
 			await new Promise(resolve => setTimeout(resolve, 200));
 
 			let text = editor.document.getText();
-			// Python multi-character quotes not fully supported yet, should at least split
-			assert.ok(text.split('\n').length > 1, 'Should split into multiple lines');
+			assert.ok(text.includes('"""'), 'Should use triple quotes after split');
 			assert.ok(text.includes('hello'), 'Should contain content');
 
 			// Merge
@@ -1469,9 +1592,156 @@ suite('Split Spaced Strings Test Suite', () => {
 				await new Promise(resolve => setTimeout(resolve, 200));
 
 				text = editor.document.getText();
-				// Should merge back (quote restoration for multi-char quotes is WIP)
 				assert.ok(text.split('\n').length === 1, 'Should merge to single line');
+				assert.ok(text.includes("'hello world test'"), 'Should restore single quotes on merge');
 			}
+		});
+
+		test('Java: Should convert double quotes to text block on split', async function() {
+			this.timeout(5000);
+
+			const input = 'String text = "hello world test";';
+			
+			document = await vscode.workspace.openTextDocument({
+				content: input,
+				language: 'java'
+			});
+			editor = await vscode.window.showTextDocument(document);
+
+			const position = new vscode.Position(0, 16);
+			editor.selection = new vscode.Selection(position, position);
+			await vscode.commands.executeCommand('split-spaced-strings.toggleSplit');
+			await new Promise(resolve => setTimeout(resolve, 200));
+
+			const text = editor.document.getText();
+			assert.ok(text.includes('"""'), 'Should use triple quotes for multiline in Java');
+		});
+
+		test('Java: Should restore double quotes on merge', async function() {
+			this.timeout(5000);
+
+			const input = 'String text = "hello world test";';
+			
+			document = await vscode.workspace.openTextDocument({
+				content: input,
+				language: 'java'
+			});
+			editor = await vscode.window.showTextDocument(document);
+
+			// Split
+			let position = new vscode.Position(0, 16);
+			editor.selection = new vscode.Selection(position, position);
+			await vscode.commands.executeCommand('split-spaced-strings.toggleSplit');
+			await new Promise(resolve => setTimeout(resolve, 200));
+
+			// Merge
+			const lines = editor.document.getText().split('\n');
+			const wordLineIndex = lines.findIndex(l => l.trim() === 'hello');
+			position = new vscode.Position(wordLineIndex, 5);
+			editor.selection = new vscode.Selection(position, position);
+			await vscode.commands.executeCommand('split-spaced-strings.toggleSplit');
+			await new Promise(resolve => setTimeout(resolve, 200));
+
+			const text = editor.document.getText();
+			assert.ok(text.includes('"hello world test"'), 'Should restore double quotes on merge in Java');
+		});
+
+		test('Kotlin: Should convert double quotes to triple quotes on split', async function() {
+			this.timeout(5000);
+
+			const input = 'val text = "hello world test"';
+			
+			document = await vscode.workspace.openTextDocument({
+				content: input,
+				language: 'kotlin'
+			});
+			editor = await vscode.window.showTextDocument(document);
+
+			const position = new vscode.Position(0, 13);
+			editor.selection = new vscode.Selection(position, position);
+			await vscode.commands.executeCommand('split-spaced-strings.toggleSplit');
+			await new Promise(resolve => setTimeout(resolve, 200));
+
+			const text = editor.document.getText();
+			assert.ok(text.includes('"""'), 'Should use triple quotes for multiline in Kotlin');
+		});
+
+		test('Kotlin: Should restore double quotes on merge', async function() {
+			this.timeout(5000);
+
+			const input = 'val text = "hello world test"';
+			
+			document = await vscode.workspace.openTextDocument({
+				content: input,
+				language: 'kotlin'
+			});
+			editor = await vscode.window.showTextDocument(document);
+
+			// Split
+			let position = new vscode.Position(0, 13);
+			editor.selection = new vscode.Selection(position, position);
+			await vscode.commands.executeCommand('split-spaced-strings.toggleSplit');
+			await new Promise(resolve => setTimeout(resolve, 200));
+
+			// Merge
+			const lines = editor.document.getText().split('\n');
+			const wordLineIndex = lines.findIndex(l => l.trim() === 'hello');
+			position = new vscode.Position(wordLineIndex, 5);
+			editor.selection = new vscode.Selection(position, position);
+			await vscode.commands.executeCommand('split-spaced-strings.toggleSplit');
+			await new Promise(resolve => setTimeout(resolve, 200));
+
+			const text = editor.document.getText();
+			assert.ok(text.includes('"hello world test"'), 'Should restore double quotes on merge in Kotlin');
+		});
+
+		test('C#: Should convert double quotes to triple quotes on split', async function() {
+			this.timeout(5000);
+
+			const input = 'var text = "hello world test";';
+			
+			document = await vscode.workspace.openTextDocument({
+				content: input,
+				language: 'csharp'
+			});
+			editor = await vscode.window.showTextDocument(document);
+
+			const position = new vscode.Position(0, 13);
+			editor.selection = new vscode.Selection(position, position);
+			await vscode.commands.executeCommand('split-spaced-strings.toggleSplit');
+			await new Promise(resolve => setTimeout(resolve, 200));
+
+			const text = editor.document.getText();
+			assert.ok(text.includes('"""'), 'Should use triple quotes for multiline in C#');
+		});
+
+		test('C#: Should restore double quotes on merge', async function() {
+			this.timeout(5000);
+
+			const input = 'var text = "hello world test";';
+			
+			document = await vscode.workspace.openTextDocument({
+				content: input,
+				language: 'csharp'
+			});
+			editor = await vscode.window.showTextDocument(document);
+
+			// Split
+			let position = new vscode.Position(0, 13);
+			editor.selection = new vscode.Selection(position, position);
+			await vscode.commands.executeCommand('split-spaced-strings.toggleSplit');
+			await new Promise(resolve => setTimeout(resolve, 200));
+
+			// Merge
+			const lines = editor.document.getText().split('\n');
+			const wordLineIndex = lines.findIndex(l => l.trim() === 'hello');
+			position = new vscode.Position(wordLineIndex, 5);
+			editor.selection = new vscode.Selection(position, position);
+			await vscode.commands.executeCommand('split-spaced-strings.toggleSplit');
+			await new Promise(resolve => setTimeout(resolve, 200));
+
+			const text = editor.document.getText();
+			assert.ok(text.includes('"hello world test"'), 'Should restore double quotes on merge in C#');
 		});
 
 		test('Go: Should convert double quotes to backticks on split', async function() {

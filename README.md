@@ -120,16 +120,16 @@ const msg = `hello ${name} test`; // Won't convert back to single quotes
 ```
 
 ### Python
-- Preserves original quote type (`'` or `"`)
-- Python allows `\n` in regular strings, so no conversion needed
+- **On Split**: Converts `'` or `"` to `"""` for multiline strings
+- **On Merge**: Restores original quotes if no interpolation features are used
 
 ### Go
 - **On Split**: Converts `"` → `` ` `` (raw string literals)
 - **On Merge**: Restores `"` if no special features used
 
 ### C#, Java, Kotlin
-- Preserves original quote type
-- Languages allow multiline strings in regular quotes
+- **On Split**: Converts `"` to `"""` for multiline strings
+- **On Merge**: Restores `"` if no special features are used
 
 ### PHP, Ruby
 - Preserves original quote type
@@ -138,4 +138,3 @@ const msg = `hello ${name} test`; // Won't convert back to single quotes
 ### Other Languages
 - Works with any language
 - Preserves original quote type by default
-

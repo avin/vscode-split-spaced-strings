@@ -14,7 +14,9 @@ interface StringInfo {
 interface TrackedString {
 	uri: string;
 	startLine: number;
+	startChar: number;
 	endLine: number;
+	endChar: number;
 	quote: string;
 	content: string;
 	// Hash to identify the string even after document changes
@@ -60,25 +62,25 @@ function getQuoteRules(languageId: string): QuoteRules {
 		
 		case 'python':
 			return {
-				multilineQuotes: ['"', "'"], // Simplified: use regular quotes (Python allows multiline)
-				preferredMultilineQuote: '"',
+				multilineQuotes: ['"""', "'''"],
+				preferredMultilineQuote: '"""',
 				hasSpecialFeatures: (content: string, quote: string) => {
 					// f-strings use {...} for interpolation
 					// Check if content has interpolation markers
 					return /\{[^}]*\}/.test(content);
 				},
-				allowsMultilineInRegularQuotes: true // Python allows \n in regular strings
+				allowsMultilineInRegularQuotes: false
 			};
 		
 		case 'csharp':
 			return {
-				multilineQuotes: ['"'], // Simplified
-				preferredMultilineQuote: '"',
+				multilineQuotes: ['"""'],
+				preferredMultilineQuote: '"""',
 				hasSpecialFeatures: (content: string, quote: string) => {
 					// Interpolated strings use {...}
 					return /\{[^}]*\}/.test(content);
 				},
-				allowsMultilineInRegularQuotes: true
+				allowsMultilineInRegularQuotes: false
 			};
 		
 		case 'go':
@@ -101,15 +103,22 @@ function getQuoteRules(languageId: string): QuoteRules {
 			};
 		
 		case 'java':
+			return {
+				multilineQuotes: ['"""'],
+				preferredMultilineQuote: '"""',
+				hasSpecialFeatures: () => false,
+				allowsMultilineInRegularQuotes: false
+			};
+
 		case 'kotlin':
 			return {
-				multilineQuotes: ['"'], // Simplified: regular quotes
-				preferredMultilineQuote: '"',
+				multilineQuotes: ['"""'],
+				preferredMultilineQuote: '"""',
 				hasSpecialFeatures: (content: string, quote: string) => {
 					// Kotlin interpolation
 					return /\$\{[^}]*\}/.test(content);
 				},
-				allowsMultilineInRegularQuotes: true
+				allowsMultilineInRegularQuotes: false
 			};
 		
 		case 'php':
@@ -134,6 +143,132 @@ function getQuoteRules(languageId: string): QuoteRules {
 	}
 }
 
+const QUOTE_TOKENS = ['"""', "'''", '`', '"', "'"];
+
+function getQuoteTokens(): string[] {
+	return QUOTE_TOKENS;
+}
+
+function resolveLanguageId(document: vscode.TextDocument, stringInfo?: StringInfo): string {
+	const languageId = document.languageId;
+	if (languageId !== 'plaintext' || !stringInfo) {
+		return languageId;
+	}
+
+	const lineText = document.lineAt(stringInfo.start.line).text;
+	const beforeString = lineText.substring(0, stringInfo.start.character);
+	if (/\b(val|var)\b/.test(beforeString)) {
+		return 'kotlin';
+	}
+
+	return languageId;
+}
+
+function isEscaped(text: string, index: number): boolean {
+	let backslashCount = 0;
+	for (let i = index - 1; i >= 0 && text[i] === '\\'; i--) {
+		backslashCount++;
+	}
+	return backslashCount % 2 === 1;
+}
+
+function matchQuoteToken(text: string, index: number, tokens: string[]): string | null {
+	for (const token of tokens) {
+		if (text.startsWith(token, index)) {
+			return token;
+		}
+	}
+	return null;
+}
+
+function findClosingQuoteInLine(lineText: string, startIndex: number, quote: string): number {
+	if (quote.length === 1) {
+		for (let i = startIndex; i < lineText.length; i++) {
+			if (lineText[i] === quote && !isEscaped(lineText, i)) {
+				return i;
+			}
+		}
+		return -1;
+	}
+
+	return lineText.indexOf(quote, startIndex);
+}
+
+function getWordRanges(lineText: string): { start: number; end: number }[] {
+	const ranges: { start: number; end: number }[] = [];
+	let inWord = false;
+	let start = 0;
+
+	for (let i = 0; i <= lineText.length; i++) {
+		const isWhitespace = i === lineText.length || /\s/.test(lineText[i]);
+		if (!isWhitespace && !inWord) {
+			start = i;
+			inWord = true;
+		}
+		if (isWhitespace && inWord) {
+			ranges.push({ start, end: i });
+			inWord = false;
+		}
+	}
+
+	return ranges;
+}
+
+function findQuotePositionInLine(
+	lineText: string,
+	quote: string,
+	expectedPos: number,
+	direction: 'start' | 'end'
+): number {
+	const quoteLength = quote.length;
+	const maxPos = lineText.length - quoteLength;
+
+	const isValid = (pos: number): boolean => {
+		if (pos < 0 || pos > maxPos) {
+			return false;
+		}
+		if (!lineText.startsWith(quote, pos)) {
+			return false;
+		}
+		if (quoteLength === 1 && isEscaped(lineText, pos)) {
+			return false;
+		}
+		return true;
+	};
+
+	if (isValid(expectedPos)) {
+		return expectedPos;
+	}
+
+	const limit = Math.max(expectedPos, lineText.length - expectedPos);
+	for (let offset = 1; offset <= limit; offset++) {
+		const left = expectedPos - offset;
+		if (isValid(left)) {
+			return left;
+		}
+		const right = expectedPos + offset;
+		if (isValid(right)) {
+			return right;
+		}
+	}
+
+	if (direction === 'start') {
+		for (let i = 0; i <= maxPos; i++) {
+			if (isValid(i)) {
+				return i;
+			}
+		}
+	} else {
+		for (let i = maxPos; i >= 0; i--) {
+			if (isValid(i)) {
+				return i;
+			}
+		}
+	}
+
+	return -1;
+}
+
 /**
  * Determine if we're in a JSX/TSX attribute context
  */
@@ -146,12 +281,16 @@ function isInJSXAttribute(document: vscode.TextDocument, position: vscode.Positi
 	const line = document.lineAt(position.line);
 	const textBeforeCursor = line.text.substring(0, position.character);
 	
-	// Simple heuristic: check if we're inside a JSX tag
-	// Look for < before the string and no > after the opening <
+	// Heuristic: inside a JSX tag and just after an attribute assignment
 	const lastOpenBracket = textBeforeCursor.lastIndexOf('<');
 	const lastCloseBracket = textBeforeCursor.lastIndexOf('>');
 	
-	return lastOpenBracket > lastCloseBracket;
+	if (lastOpenBracket <= lastCloseBracket) {
+		return false;
+	}
+
+	const tagText = textBeforeCursor.substring(lastOpenBracket);
+	return /=\s*$/.test(tagText);
 }
 
 /**
@@ -199,63 +338,55 @@ let decorationType: vscode.TextEditorDecorationType;
 /**
  * Find the string literal at the cursor position
  */
-function findStringAtCursor(document: vscode.TextDocument, position: vscode.Position): StringInfo | null {
+function findSingleLineStringAtCursor(document: vscode.TextDocument, position: vscode.Position): StringInfo | null {
 	const line = document.lineAt(position.line);
 	const lineText = line.text;
 	const cursorOffset = position.character;
+	const tokens = getQuoteTokens();
 
-	// Try to find string on current line first
-	const quotes = ['"', "'", '`'];
-	
-	for (const quote of quotes) {
-		let inString = false;
-		let stringStart = -1;
-		let escapeNext = false;
-
-		for (let i = 0; i < lineText.length; i++) {
-			if (escapeNext) {
-				escapeNext = false;
-				continue;
-			}
-
-			if (lineText[i] === '\\') {
-				escapeNext = true;
-				continue;
-			}
-
-			if (lineText[i] === quote) {
-				if (!inString) {
-					stringStart = i;
-					inString = true;
-				} else {
-					// Found closing quote
-					if (cursorOffset > stringStart && cursorOffset <= i) {
-						// Cursor is inside this string
-						const content = lineText.substring(stringStart + 1, i);
-						return {
-							start: new vscode.Position(position.line, stringStart),
-							end: new vscode.Position(position.line, i + 1),
-							quote,
-							content,
-							isMultiline: false // Single line string on same line
-						};
-					}
-					inString = false;
-					stringStart = -1;
-				}
-			}
+	let i = 0;
+	while (i < lineText.length) {
+		const token = matchQuoteToken(lineText, i, tokens);
+		if (!token) {
+			i++;
+			continue;
 		}
 
-		// If we're still in a string (unclosed on this line), check if it's a multiline string
-		if (inString && cursorOffset > stringStart) {
-			// For template literals, check for multiline strings
-			if (quote === '`') {
-				return findMultilineString(document, position, quote);
-			}
+		if (token.length === 1 && isEscaped(lineText, i)) {
+			i++;
+			continue;
 		}
+
+		const end = findClosingQuoteInLine(lineText, i + token.length, token);
+		if (end === -1) {
+			i += token.length;
+			continue;
+		}
+
+		const closingTokenEnd = end + token.length - 1;
+		if (cursorOffset > i && cursorOffset <= closingTokenEnd) {
+			const content = lineText.substring(i + token.length, end);
+			return {
+				start: new vscode.Position(position.line, i),
+				end: new vscode.Position(position.line, end + token.length),
+				quote: token,
+				content,
+				isMultiline: false
+			};
+		}
+
+		i = end + token.length;
 	}
 
-	// Try to find if cursor is in a multiline string
+	return null;
+}
+
+function findStringAtCursor(document: vscode.TextDocument, position: vscode.Position): StringInfo | null {
+	const singleLine = findSingleLineStringAtCursor(document, position);
+	if (singleLine) {
+		return singleLine;
+	}
+
 	return findMultilineString(document, position);
 }
 
@@ -263,9 +394,10 @@ function findStringAtCursor(document: vscode.TextDocument, position: vscode.Posi
  * Find multiline string that spans multiple lines
  */
 function findMultilineString(document: vscode.TextDocument, position: vscode.Position, preferredQuote?: string): StringInfo | null {
-	const quotes = preferredQuote ? [preferredQuote] : ['`', '"', "'"];
+	const quotes = preferredQuote ? [preferredQuote] : getQuoteTokens();
 	
 	for (const quote of quotes) {
+		const quoteLength = quote.length;
 		// Search backwards to find opening quote
 		let startLine = position.line;
 		let startChar = -1;
@@ -273,30 +405,23 @@ function findMultilineString(document: vscode.TextDocument, position: vscode.Pos
 
 		for (let lineNum = position.line; lineNum >= 0; lineNum--) {
 			const lineText = document.lineAt(lineNum).text;
-			let escapeNext = false;
+			const maxIndex = lineText.length - quoteLength;
+			let iStart = maxIndex;
+			if (lineNum === position.line) {
+				iStart = Math.min(maxIndex, position.character - 1);
+			}
 
-			for (let i = lineText.length - 1; i >= 0; i--) {
-				// Skip if this is the line after cursor position
-				if (lineNum === position.line && i >= position.character) {
+			for (let i = iStart; i >= 0; i--) {
+				if (!lineText.startsWith(quote, i)) {
 					continue;
 				}
-
-				if (escapeNext) {
-					escapeNext = false;
+				if (quoteLength === 1 && isEscaped(lineText, i)) {
 					continue;
 				}
-
-				if (lineText[i] === '\\' && i > 0) {
-					escapeNext = true;
-					continue;
-				}
-
-				if (lineText[i] === quote) {
-					startLine = lineNum;
-					startChar = i;
-					found = true;
-					break;
-				}
+				startLine = lineNum;
+				startChar = i;
+				found = true;
+				break;
 			}
 
 			if (found) {
@@ -315,26 +440,19 @@ function findMultilineString(document: vscode.TextDocument, position: vscode.Pos
 
 		for (let lineNum = startLine; lineNum < document.lineCount; lineNum++) {
 			const lineText = document.lineAt(lineNum).text;
-			let escapeNext = false;
-			const startPos = lineNum === startLine ? startChar + 1 : 0;
+			const startPos = lineNum === startLine ? startChar + quoteLength : 0;
 
-			for (let i = startPos; i < lineText.length; i++) {
-				if (escapeNext) {
-					escapeNext = false;
+			for (let i = startPos; i <= lineText.length - quoteLength; i++) {
+				if (!lineText.startsWith(quote, i)) {
 					continue;
 				}
-
-				if (lineText[i] === '\\') {
-					escapeNext = true;
+				if (quoteLength === 1 && isEscaped(lineText, i)) {
 					continue;
 				}
-
-				if (lineText[i] === quote) {
-					endLine = lineNum;
-					endChar = i;
-					found = true;
-					break;
-				}
+				endLine = lineNum;
+				endChar = i;
+				found = true;
+				break;
 			}
 
 			if (found) {
@@ -353,7 +471,7 @@ function findMultilineString(document: vscode.TextDocument, position: vscode.Pos
 		if (position.line === startLine && position.character <= startChar) {
 			continue;
 		}
-		if (position.line === endLine && position.character > endChar) {
+		if (position.line === endLine && position.character > endChar + quoteLength - 1) {
 			continue;
 		}
 
@@ -362,9 +480,9 @@ function findMultilineString(document: vscode.TextDocument, position: vscode.Pos
 		for (let lineNum = startLine; lineNum <= endLine; lineNum++) {
 			const lineText = document.lineAt(lineNum).text;
 			if (lineNum === startLine && lineNum === endLine) {
-				content = lineText.substring(startChar + 1, endChar);
+				content = lineText.substring(startChar + quoteLength, endChar);
 			} else if (lineNum === startLine) {
-				content = lineText.substring(startChar + 1) + '\n';
+				content = lineText.substring(startChar + quoteLength) + '\n';
 			} else if (lineNum === endLine) {
 				content += lineText.substring(0, endChar);
 			} else {
@@ -374,7 +492,7 @@ function findMultilineString(document: vscode.TextDocument, position: vscode.Pos
 
 		return {
 			start: new vscode.Position(startLine, startChar),
-			end: new vscode.Position(endLine, endChar + 1),
+			end: new vscode.Position(endLine, endChar + quoteLength),
 			quote,
 			content,
 			isMultiline: startLine !== endLine || content.includes('\n')
@@ -398,7 +516,8 @@ function splitString(stringInfo: StringInfo, document: vscode.TextDocument): str
 	const isJSXAttr = isInJSXAttribute(document, stringInfo.start);
 	
 	// Get appropriate quote for multiline
-	const multilineQuote = getMultilineQuote(document.languageId, stringInfo.quote, isJSXAttr);
+	const languageId = resolveLanguageId(document, stringInfo);
+	const multilineQuote = getMultilineQuote(languageId, stringInfo.quote, isJSXAttr);
 	
 	// Store original quote if it's different from multiline quote
 	if (multilineQuote !== stringInfo.quote) {
@@ -428,7 +547,8 @@ function mergeString(stringInfo: StringInfo, document: vscode.TextDocument): str
 	let finalQuote = stringInfo.quote;
 	
 	// Check if we should restore original quote
-	if (shouldRestoreOriginalQuote(document.languageId, content, stringInfo.quote, stringInfo.originalQuote)) {
+	const languageId = resolveLanguageId(document, stringInfo);
+	if (shouldRestoreOriginalQuote(languageId, content, stringInfo.quote, stringInfo.originalQuote)) {
 		finalQuote = stringInfo.originalQuote!;
 	}
 	
@@ -439,11 +559,11 @@ function mergeString(stringInfo: StringInfo, document: vscode.TextDocument): str
  * Find which word the cursor is in and the offset within that word
  */
 function getCursorWordPosition(stringInfo: StringInfo, cursorPosition: vscode.Position): { wordIndex: number; charOffset: number } | null {
-	const words = stringInfo.content.trim().split(/\s+/);
+	const words = stringInfo.content.trim().split(/\s+/).filter(word => word.length > 0);
 	
 	// For single-line strings
 	if (!stringInfo.isMultiline) {
-		const contentStart = stringInfo.start.character + 1; // After opening quote
+		const contentStart = stringInfo.start.character + stringInfo.quote.length; // After opening quote
 		const cursorOffset = cursorPosition.character - contentStart;
 		const content = stringInfo.content.trim();
 		
@@ -502,25 +622,67 @@ function getCursorWordPosition(stringInfo: StringInfo, cursorPosition: vscode.Po
 	} else {
 		// For multi-line strings, find which line the cursor is on
 		// We need to check the actual document lines, not the content lines
+		const contentLines = stringInfo.content.split('\n');
+		let wordCounter = 0;
+
 		for (let lineOffset = 0; lineOffset <= stringInfo.end.line - stringInfo.start.line; lineOffset++) {
 			const actualLine = stringInfo.start.line + lineOffset;
 			if (actualLine === cursorPosition.line) {
 				// Get the actual line text from the document
-				const lineText = stringInfo.content.split('\n')[lineOffset] || '';
-				const trimmedLine = lineText.trim();
-				
-				if (trimmedLine.length > 0) {
-					// Find which word this is
-					const wordIndex = words.indexOf(trimmedLine);
-					if (wordIndex !== -1) {
-						// Calculate cursor offset within the trimmed word
-						const trimStart = lineText.length - lineText.trimStart().length;
-						const charOffset = Math.max(0, Math.min(cursorPosition.character - trimStart, trimmedLine.length));
-						return { wordIndex, charOffset };
+				const lineText = contentLines[lineOffset] || '';
+				const ranges = getWordRanges(lineText);
+				if (ranges.length === 0) {
+					return null;
+				}
+
+				const lineStartChar = actualLine === stringInfo.start.line
+					? stringInfo.start.character + stringInfo.quote.length
+					: 0;
+				const cursorOffset = cursorPosition.character - lineStartChar;
+
+				for (let i = 0; i < ranges.length; i++) {
+					const range = ranges[i];
+					if (cursorOffset >= range.start && cursorOffset <= range.end) {
+						return {
+							wordIndex: wordCounter + i,
+							charOffset: cursorOffset - range.start
+						};
 					}
 				}
+
+				if (cursorOffset < ranges[0].start) {
+					return { wordIndex: wordCounter, charOffset: 0 };
+				}
+
+				const lastRange = ranges[ranges.length - 1];
+				if (cursorOffset > lastRange.end) {
+					return {
+						wordIndex: wordCounter + ranges.length - 1,
+						charOffset: lastRange.end - lastRange.start
+					};
+				}
+
+				for (let i = 0; i < ranges.length - 1; i++) {
+					const currentEnd = ranges[i].end;
+					const nextStart = ranges[i + 1].start;
+					if (cursorOffset > currentEnd && cursorOffset < nextStart) {
+						const distToCurrent = cursorOffset - currentEnd;
+						const distToNext = nextStart - cursorOffset;
+						if (distToCurrent <= distToNext) {
+							return {
+								wordIndex: wordCounter + i,
+								charOffset: ranges[i].end - ranges[i].start
+							};
+						}
+						return { wordIndex: wordCounter + i + 1, charOffset: 0 };
+					}
+				}
+
 				break;
 			}
+
+			const lineText = contentLines[lineOffset] || '';
+			wordCounter += getWordRanges(lineText).length;
 		}
 	}
 	
@@ -540,7 +702,7 @@ function calculateNewCursorPosition(
 		return stringInfo.start;
 	}
 	
-	const words = stringInfo.content.trim().split(/\s+/);
+	const words = stringInfo.content.trim().split(/\s+/).filter(word => word.length > 0);
 	if (wordPosition.wordIndex >= words.length) {
 		return stringInfo.start;
 	}
@@ -549,21 +711,31 @@ function calculateNewCursorPosition(
 	
 	// If converting to multiline
 	if (!wasMultiline) {
-		// Find the line with the target word
+		// Find the line with the target word by index to handle duplicates
 		const lines = newText.split('\n');
+		const quoteToken = lines.length > 0 ? lines[0].trim() : '';
+		let wordCounter = 0;
 		for (let i = 0; i < lines.length; i++) {
-			if (lines[i].trim() === targetWord) {
+			const trimmedLine = lines[i].trim();
+			if (!trimmedLine || (quoteToken && trimmedLine === quoteToken)) {
+				continue;
+			}
+			const ranges = getWordRanges(lines[i]);
+			if (ranges.length === 0) {
+				continue;
+			}
+			if (wordPosition.wordIndex < wordCounter + ranges.length) {
+				const range = ranges[wordPosition.wordIndex - wordCounter];
 				const line = stringInfo.start.line + i;
-				const lineText = lines[i];
-				const trimStart = lineText.length - lineText.trimStart().length;
-				const character = trimStart + Math.min(wordPosition.charOffset, targetWord.length);
+				const character = range.start + Math.min(wordPosition.charOffset, range.end - range.start);
 				return new vscode.Position(line, character);
 			}
+			wordCounter += ranges.length;
 		}
 	} else {
 		// Converting to single line
 		// Calculate position in merged string
-		const contentStart = stringInfo.start.character + 1; // After opening quote
+		const contentStart = stringInfo.start.character + stringInfo.quote.length; // After opening quote
 		let offset = 0;
 		for (let i = 0; i < wordPosition.wordIndex; i++) {
 			offset += words[i].length + 1; // word + space
@@ -590,7 +762,10 @@ function trackString(document: vscode.TextDocument, stringInfo: StringInfo) {
 	// Remove any EXACT match (same start/end line) - this prevents duplicates
 	// Don't remove non-overlapping strings - they are independent split strings
 	const filtered = tracked.filter(t => 
-		!(t.startLine === stringInfo.start.line && t.endLine === stringInfo.end.line)
+		!(t.startLine === stringInfo.start.line &&
+			t.endLine === stringInfo.end.line &&
+			t.startChar === stringInfo.start.character &&
+			t.endChar === stringInfo.end.character - stringInfo.quote.length)
 	);
 	
 	// Create a simple hash from the content for tracking
@@ -600,7 +775,9 @@ function trackString(document: vscode.TextDocument, stringInfo: StringInfo) {
 	filtered.push({
 		uri,
 		startLine: stringInfo.start.line,
+		startChar: stringInfo.start.character,
 		endLine: stringInfo.end.line,
+		endChar: stringInfo.end.character - stringInfo.quote.length,
 		quote: stringInfo.quote,
 		content: stringInfo.content,
 		contentHash,
@@ -622,7 +799,10 @@ function untrackString(document: vscode.TextDocument, stringInfo: StringInfo) {
 	
 	// Remove the string at this position
 	const filtered = tracked.filter(t => 
-		t.startLine !== stringInfo.start.line || t.endLine !== stringInfo.end.line
+		t.startLine !== stringInfo.start.line ||
+		t.endLine !== stringInfo.end.line ||
+		t.startChar !== stringInfo.start.character ||
+		t.endChar !== stringInfo.end.character - stringInfo.quote.length
 	);
 	
 	if (filtered.length === 0) {
@@ -673,37 +853,24 @@ function findTrackedStringsInDocument(document: vscode.TextDocument): StringInfo
 		try {
 			const startLineText = document.lineAt(t.startLine).text;
 			const endLineText = document.lineAt(t.endLine).text;
-			
-			// Find opening quote (first occurrence of quote type)
-			let startQuotePos = -1;
-			for (let i = 0; i < startLineText.length; i++) {
-				if (startLineText[i] === t.quote) {
-					startQuotePos = i;
-					break;
-				}
-			}
-			
-			// Find closing quote (last occurrence of quote type)
-			let endQuotePos = -1;
-			for (let i = endLineText.length - 1; i >= 0; i--) {
-				if (endLineText[i] === t.quote) {
-					endQuotePos = i;
-					break;
-				}
-			}
+
+			const startQuotePos = findQuotePositionInLine(startLineText, t.quote, t.startChar, 'start');
+			const endQuotePos = findQuotePositionInLine(endLineText, t.quote, t.endChar, 'end');
 			
 			if (startQuotePos === -1 || endQuotePos === -1) {
 				continue;
 			}
 			
+			const quoteLength = t.quote.length;
+
 			// Extract current content
 			let content = '';
 			for (let lineNum = t.startLine; lineNum <= t.endLine; lineNum++) {
 				const lineText = document.lineAt(lineNum).text;
 				if (lineNum === t.startLine && lineNum === t.endLine) {
-					content = lineText.substring(startQuotePos + 1, endQuotePos);
+					content = lineText.substring(startQuotePos + quoteLength, endQuotePos);
 				} else if (lineNum === t.startLine) {
-					content = lineText.substring(startQuotePos + 1) + '\n';
+					content = lineText.substring(startQuotePos + quoteLength) + '\n';
 				} else if (lineNum === t.endLine) {
 					content += lineText.substring(0, endQuotePos);
 				} else {
@@ -717,7 +884,7 @@ function findTrackedStringsInDocument(document: vscode.TextDocument): StringInfo
 			    currentHash === t.contentHash) {
 				result.push({
 					start: new vscode.Position(t.startLine, startQuotePos),
-					end: new vscode.Position(t.endLine, endQuotePos + 1),
+					end: new vscode.Position(t.endLine, endQuotePos + quoteLength),
 					quote: t.quote,
 					content,
 					isMultiline: true,
@@ -792,8 +959,12 @@ export function activate(context: vscode.ExtensionContext) {
 			const tracked = trackedStrings.get(uri);
 			if (tracked) {
 				// Find matching tracked string
+				const endChar = stringInfo.end.character - stringInfo.quote.length;
 				for (const t of tracked) {
-					if (t.startLine === stringInfo.start.line && t.endLine === stringInfo.end.line) {
+					if (t.startLine === stringInfo.start.line &&
+						t.endLine === stringInfo.end.line &&
+						t.startChar === stringInfo.start.character &&
+						t.endChar === endChar) {
 						stringInfo.originalQuote = t.originalQuote;
 						break;
 					}
@@ -828,7 +999,10 @@ export function activate(context: vscode.ExtensionContext) {
 			} else {
 				// Was single line, now multiline - track it
 				// The document is now updated, find the string at the start position
-				const searchPosition = new vscode.Position(stringInfo.start.line, stringInfo.start.character + 1);
+				const searchPosition = new vscode.Position(
+					stringInfo.start.line,
+					stringInfo.start.character + stringInfo.quote.length
+				);
 				const newStringInfo = findStringAtCursor(document, searchPosition);
 				if (newStringInfo && newStringInfo.isMultiline) {
 					// Set originalQuote on the new string info
@@ -893,13 +1067,18 @@ export function activate(context: vscode.ExtensionContext) {
 		
 		const editor = vscode.window.activeTextEditor;
 		if (editor && editor.document === event.document) {
-		const uri = event.document.uri.toString();
+			const uri = event.document.uri.toString();
 			const tracked = trackedStrings.get(uri);
 			
 			if (tracked && tracked.length > 0) {
 				// Update positions and content hashes based on text changes
 				for (const change of event.contentChanges) {
 					const lineDelta = change.text.split('\n').length - 1 - (change.range.end.line - change.range.start.line);
+					const isSingleLineChange = change.range.start.line === change.range.end.line &&
+						change.text.indexOf('\n') === -1;
+					const charDelta = isSingleLineChange
+						? change.text.length - (change.range.end.character - change.range.start.character)
+						: 0;
 					
 					// Update all tracked strings based on where the change occurred
 					for (const t of tracked) {
@@ -910,16 +1089,11 @@ export function activate(context: vscode.ExtensionContext) {
 							// Find the closing quote position on this line
 							try {
 								const endLineText = event.document.lineAt(t.endLine).text;
-								let endQuotePos = -1;
-								for (let i = endLineText.length - 1; i >= 0; i--) {
-									if (endLineText[i] === t.quote) {
-										endQuotePos = i;
-										break;
-									}
-								}
+								const endQuotePos = findQuotePositionInLine(endLineText, t.quote, t.endChar, 'end');
 								
 								// If change starts after the closing quote, it's outside the string
-								if (endQuotePos !== -1 && change.range.start.character > endQuotePos) {
+								if (endQuotePos !== -1 &&
+									change.range.start.character > endQuotePos + t.quote.length - 1) {
 									isChangeAfterString = true;
 								}
 							} catch (e) {
@@ -949,6 +1123,21 @@ export function activate(context: vscode.ExtensionContext) {
 								t.endLine += lineDelta;
 							}
 						}
+
+						if (isSingleLineChange && !isChangeAfterString) {
+							if (change.range.start.line === t.startLine &&
+								change.range.end.character <= t.startChar) {
+								t.startChar += charDelta;
+								if (t.startLine === t.endLine) {
+									t.endChar += charDelta;
+								}
+							}
+
+							if (change.range.start.line === t.endLine &&
+								change.range.start.character <= t.endChar) {
+								t.endChar += charDelta;
+							}
+						}
 					}
 				}
 				
@@ -962,15 +1151,7 @@ export function activate(context: vscode.ExtensionContext) {
 					try {
 						// Find the opening quote on the start line
 						const startLineText = event.document.lineAt(t.startLine).text;
-						let startQuotePos = -1;
-						
-						// Search for quote position, preferring positions near where we expect it
-						for (let i = 0; i < startLineText.length; i++) {
-							if (startLineText[i] === t.quote) {
-								startQuotePos = i;
-								break;
-							}
-						}
+						const startQuotePos = findQuotePositionInLine(startLineText, t.quote, t.startChar, 'start');
 						
 						if (startQuotePos === -1) {
 							continue;
@@ -978,28 +1159,22 @@ export function activate(context: vscode.ExtensionContext) {
 						
 						// Find the closing quote on the end line
 						const endLineText = event.document.lineAt(t.endLine).text;
-						let endQuotePos = -1;
-						
-						// Search backwards for the closing quote
-						for (let i = endLineText.length - 1; i >= 0; i--) {
-							if (endLineText[i] === t.quote) {
-								endQuotePos = i;
-								break;
-							}
-						}
+						const endQuotePos = findQuotePositionInLine(endLineText, t.quote, t.endChar, 'end');
 						
 						if (endQuotePos === -1) {
 							continue;
 						}
 						
+						const quoteLength = t.quote.length;
+
 						// Extract the content between quotes
 						let content = '';
 						for (let lineNum = t.startLine; lineNum <= t.endLine; lineNum++) {
 							const lineText = event.document.lineAt(lineNum).text;
 							if (lineNum === t.startLine && lineNum === t.endLine) {
-								content = lineText.substring(startQuotePos + 1, endQuotePos);
+								content = lineText.substring(startQuotePos + quoteLength, endQuotePos);
 							} else if (lineNum === t.startLine) {
-								content = lineText.substring(startQuotePos + 1) + '\n';
+								content = lineText.substring(startQuotePos + quoteLength) + '\n';
 							} else if (lineNum === t.endLine) {
 								content += lineText.substring(0, endQuotePos);
 							} else {
@@ -1008,6 +1183,8 @@ export function activate(context: vscode.ExtensionContext) {
 						}
 						
 						// Update the hash with actual current content
+						t.startChar = startQuotePos;
+						t.endChar = endQuotePos;
 						t.content = content;
 						t.contentHash = content.trim().replace(/\s+/g, ' ');
 					} catch (e) {
@@ -1045,3 +1222,7 @@ export function activate(context: vscode.ExtensionContext) {
 export function deactivate() {
 	trackedStrings.clear();
 }
+
+export const __test__ = {
+	collapseTrackedStrings
+};
