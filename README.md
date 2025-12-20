@@ -90,3 +90,52 @@ When enabled:
 
 All string types work with both single-line and multi-line formats.
 
+## Smart Quote Conversion
+
+The extension intelligently handles quote types based on the programming language:
+
+### JavaScript / TypeScript / JSX / TSX
+- **On Split**: Converts `'` or `"` → `` ` `` (template literals) for proper multiline support
+- **On Merge**: Restores original quotes (`'` or `"`) if no template features are used
+- **Keeps backticks**: When template interpolation like `${...}` is detected
+- **JSX Attributes**: Preserves double quotes in JSX attributes (multiline is allowed)
+
+**Example:**
+```javascript
+// Original
+const msg = 'hello world test';
+
+// After split - uses backticks
+const msg = `
+  hello
+  world
+  test
+`;
+
+// After merge - restores single quotes
+const msg = 'hello world test';
+
+// With template interpolation - keeps backticks
+const msg = `hello ${name} test`; // Won't convert back to single quotes
+```
+
+### Python
+- Preserves original quote type (`'` or `"`)
+- Python allows `\n` in regular strings, so no conversion needed
+
+### Go
+- **On Split**: Converts `"` → `` ` `` (raw string literals)
+- **On Merge**: Restores `"` if no special features used
+
+### C#, Java, Kotlin
+- Preserves original quote type
+- Languages allow multiline strings in regular quotes
+
+### PHP, Ruby
+- Preserves original quote type
+- Detects variable interpolation (`$variable`, `#{...}`) and maintains appropriate quotes
+
+### Other Languages
+- Works with any language
+- Preserves original quote type by default
+

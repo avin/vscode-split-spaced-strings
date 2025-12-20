@@ -8,6 +8,7 @@ interface StringInfo {
 	quote: string;
 	content: string;
 	isMultiline: boolean;
+	originalQuote?: string; // Original quote type before conversion
 }
 
 interface TrackedString {
@@ -18,6 +19,177 @@ interface TrackedString {
 	content: string;
 	// Hash to identify the string even after document changes
 	contentHash: string;
+	originalQuote?: string; // Original quote type before split
+}
+
+/**
+ * Language-specific quote rules
+ */
+interface QuoteRules {
+	// Quote types that support multiline strings natively
+	multilineQuotes: string[];
+	// Preferred quote for multiline conversion
+	preferredMultilineQuote: string;
+	// Function to check if content uses special multiline features
+	hasSpecialFeatures: (content: string, quote: string) => boolean;
+	// Whether multiline strings are allowed in regular quotes
+	allowsMultilineInRegularQuotes: boolean;
+}
+
+/**
+ * Get quote rules for a language
+ */
+function getQuoteRules(languageId: string): QuoteRules {
+	switch (languageId) {
+		case 'javascript':
+		case 'typescript':
+		case 'javascriptreact':
+		case 'typescriptreact':
+			return {
+				multilineQuotes: ['`'],
+				preferredMultilineQuote: '`',
+				hasSpecialFeatures: (content: string, quote: string) => {
+					// Template literals use ${...} for interpolation
+					if (quote === '`') {
+						return /\$\{[^}]*\}/.test(content);
+					}
+					return false;
+				},
+				allowsMultilineInRegularQuotes: false
+			};
+		
+		case 'python':
+			return {
+				multilineQuotes: ['"', "'"], // Simplified: use regular quotes (Python allows multiline)
+				preferredMultilineQuote: '"',
+				hasSpecialFeatures: (content: string, quote: string) => {
+					// f-strings use {...} for interpolation
+					// Check if content has interpolation markers
+					return /\{[^}]*\}/.test(content);
+				},
+				allowsMultilineInRegularQuotes: true // Python allows \n in regular strings
+			};
+		
+		case 'csharp':
+			return {
+				multilineQuotes: ['"'], // Simplified
+				preferredMultilineQuote: '"',
+				hasSpecialFeatures: (content: string, quote: string) => {
+					// Interpolated strings use {...}
+					return /\{[^}]*\}/.test(content);
+				},
+				allowsMultilineInRegularQuotes: true
+			};
+		
+		case 'go':
+			return {
+				multilineQuotes: ['`'],
+				preferredMultilineQuote: '`',
+				hasSpecialFeatures: () => false,
+				allowsMultilineInRegularQuotes: false
+			};
+		
+		case 'ruby':
+			return {
+				multilineQuotes: ['"', "'"], // Simplified
+				preferredMultilineQuote: '"',
+				hasSpecialFeatures: (content: string, quote: string) => {
+					// Ruby interpolation uses #{...}
+					return /#\{[^}]*\}/.test(content);
+				},
+				allowsMultilineInRegularQuotes: true
+			};
+		
+		case 'java':
+		case 'kotlin':
+			return {
+				multilineQuotes: ['"'], // Simplified: regular quotes
+				preferredMultilineQuote: '"',
+				hasSpecialFeatures: (content: string, quote: string) => {
+					// Kotlin interpolation
+					return /\$\{[^}]*\}/.test(content);
+				},
+				allowsMultilineInRegularQuotes: true
+			};
+		
+		case 'php':
+			return {
+				multilineQuotes: ['"'], // Simplified
+				preferredMultilineQuote: '"',
+				hasSpecialFeatures: (content: string, quote: string) => {
+					// PHP variables in strings
+					return /\$[a-zA-Z_]/.test(content);
+				},
+				allowsMultilineInRegularQuotes: true
+			};
+		
+		default:
+			// For unknown languages, be conservative
+			return {
+				multilineQuotes: [],
+				preferredMultilineQuote: '"',
+				hasSpecialFeatures: () => false,
+				allowsMultilineInRegularQuotes: true
+			};
+	}
+}
+
+/**
+ * Determine if we're in a JSX/TSX attribute context
+ */
+function isInJSXAttribute(document: vscode.TextDocument, position: vscode.Position): boolean {
+	const languageId = document.languageId;
+	if (languageId !== 'javascriptreact' && languageId !== 'typescriptreact') {
+		return false;
+	}
+	
+	const line = document.lineAt(position.line);
+	const textBeforeCursor = line.text.substring(0, position.character);
+	
+	// Simple heuristic: check if we're inside a JSX tag
+	// Look for < before the string and no > after the opening <
+	const lastOpenBracket = textBeforeCursor.lastIndexOf('<');
+	const lastCloseBracket = textBeforeCursor.lastIndexOf('>');
+	
+	return lastOpenBracket > lastCloseBracket;
+}
+
+/**
+ * Get the appropriate quote type for multiline strings
+ */
+function getMultilineQuote(languageId: string, originalQuote: string, isJSXAttr: boolean): string {
+	// JSX attributes can use regular quotes for multiline
+	if (isJSXAttr) {
+		return originalQuote;
+	}
+	
+	const rules = getQuoteRules(languageId);
+	
+	// If language doesn't have special multiline quotes, keep original
+	if (rules.multilineQuotes.length === 0 || rules.allowsMultilineInRegularQuotes) {
+		return originalQuote;
+	}
+	
+	// Use preferred multiline quote
+	return rules.preferredMultilineQuote;
+}
+
+/**
+ * Determine if we should restore original quotes when merging
+ */
+function shouldRestoreOriginalQuote(languageId: string, content: string, currentQuote: string, originalQuote: string | undefined): boolean {
+	if (!originalQuote || originalQuote === currentQuote) {
+		return false;
+	}
+	
+	const rules = getQuoteRules(languageId);
+	
+	// Check if content uses special features of the current quote type
+	if (rules.hasSpecialFeatures(content, currentQuote)) {
+		return false; // Keep current quote because content uses its features
+	}
+	
+	return true;
 }
 
 // Global tracking of split strings
@@ -222,11 +394,22 @@ function splitString(stringInfo: StringInfo, document: vscode.TextDocument): str
 	const lineIndent = lineText.substring(0, lineText.length - lineText.trimStart().length);
 	const additionalIndent = '  ';
 	
-	let result = stringInfo.quote + '\n';
+	// Determine if we're in JSX attribute
+	const isJSXAttr = isInJSXAttribute(document, stringInfo.start);
+	
+	// Get appropriate quote for multiline
+	const multilineQuote = getMultilineQuote(document.languageId, stringInfo.quote, isJSXAttr);
+	
+	// Store original quote if it's different from multiline quote
+	if (multilineQuote !== stringInfo.quote) {
+		stringInfo.originalQuote = stringInfo.quote;
+	}
+	
+	let result = multilineQuote + '\n';
 	words.forEach((word) => {
 		result += lineIndent + additionalIndent + word + '\n';
 	});
-	result += lineIndent + stringInfo.quote;
+	result += lineIndent + multilineQuote;
 	
 	return result;
 }
@@ -234,14 +417,22 @@ function splitString(stringInfo: StringInfo, document: vscode.TextDocument): str
 /**
  * Merge a multi-line string into a single line
  */
-function mergeString(stringInfo: StringInfo): string {
+function mergeString(stringInfo: StringInfo, document: vscode.TextDocument): string {
 	const content = stringInfo.content
 		.split('\n')
 		.map(line => line.trim())
 		.filter(line => line.length > 0)
 		.join(' ');
 	
-	return stringInfo.quote + content + stringInfo.quote;
+	// Determine final quote to use
+	let finalQuote = stringInfo.quote;
+	
+	// Check if we should restore original quote
+	if (shouldRestoreOriginalQuote(document.languageId, content, stringInfo.quote, stringInfo.originalQuote)) {
+		finalQuote = stringInfo.originalQuote!;
+	}
+	
+	return finalQuote + content + finalQuote;
 }
 
 /**
@@ -412,7 +603,8 @@ function trackString(document: vscode.TextDocument, stringInfo: StringInfo) {
 		endLine: stringInfo.end.line,
 		quote: stringInfo.quote,
 		content: stringInfo.content,
-		contentHash
+		contentHash,
+		originalQuote: stringInfo.originalQuote
 	});
 	
 	trackedStrings.set(uri, filtered);
@@ -528,7 +720,8 @@ function findTrackedStringsInDocument(document: vscode.TextDocument): StringInfo
 					end: new vscode.Position(t.endLine, endQuotePos + 1),
 					quote: t.quote,
 					content,
-					isMultiline: true
+					isMultiline: true,
+					originalQuote: t.originalQuote
 				});
 			}
 		} catch (e) {
@@ -551,7 +744,7 @@ function collapseTrackedStrings(document: vscode.TextDocument): vscode.TextEdit[
 	strings.sort((a, b) => b.start.line - a.start.line);
 	
 	for (const stringInfo of strings) {
-		const newText = mergeString(stringInfo);
+		const newText = mergeString(stringInfo, document);
 		const range = new vscode.Range(stringInfo.start, stringInfo.end);
 		edits.push(vscode.TextEdit.replace(range, newText));
 	}
@@ -593,13 +786,28 @@ export function activate(context: vscode.ExtensionContext) {
 			return;
 		}
 
+		// If string is multiline and we're merging, try to get originalQuote from tracking
+		if (stringInfo.isMultiline) {
+			const uri = document.uri.toString();
+			const tracked = trackedStrings.get(uri);
+			if (tracked) {
+				// Find matching tracked string
+				for (const t of tracked) {
+					if (t.startLine === stringInfo.start.line && t.endLine === stringInfo.end.line) {
+						stringInfo.originalQuote = t.originalQuote;
+						break;
+					}
+				}
+			}
+		}
+
 		// Save cursor position relative to word
 		const wordPosition = getCursorWordPosition(stringInfo, position);
 		const wasMultiline = stringInfo.isMultiline;
 
 		// Determine if we should split or merge
 		const newText = stringInfo.isMultiline 
-			? mergeString(stringInfo) 
+			? mergeString(stringInfo, document) 
 			: splitString(stringInfo, document);
 
 		// Replace the string
@@ -608,26 +816,29 @@ export function activate(context: vscode.ExtensionContext) {
 			editBuilder.replace(range, newText);
 		});
 
-		// Update tracking after edit is applied (only if auto-collapse is enabled)
+		// Update tracking after edit is applied
 		if (editSuccess) {
 			const config = vscode.workspace.getConfiguration('splitSpacedStrings');
 			const autoCollapse = config.get<boolean>('autoCollapseOnSave', false);
 			
-			if (autoCollapse) {
-				if (wasMultiline) {
-					// Was multiline, now single line - untrack it
-					untrackString(document, stringInfo);
-				} else {
-					// Was single line, now multiline - track it
-					// The document is now updated, find the string at the start position
-					const searchPosition = new vscode.Position(stringInfo.start.line, stringInfo.start.character + 1);
-					const newStringInfo = findStringAtCursor(document, searchPosition);
-					if (newStringInfo && newStringInfo.isMultiline) {
-						trackString(document, newStringInfo);
-					}
+			// ALWAYS track split strings to preserve originalQuote for manual merge
+			if (wasMultiline) {
+				// Was multiline, now single line - untrack it
+				untrackString(document, stringInfo);
+			} else {
+				// Was single line, now multiline - track it
+				// The document is now updated, find the string at the start position
+				const searchPosition = new vscode.Position(stringInfo.start.line, stringInfo.start.character + 1);
+				const newStringInfo = findStringAtCursor(document, searchPosition);
+				if (newStringInfo && newStringInfo.isMultiline) {
+					// Set originalQuote on the new string info
+					newStringInfo.originalQuote = stringInfo.originalQuote || stringInfo.quote;
+					trackString(document, newStringInfo);
 				}
+			}
 
-				// Update decorations
+			// Update decorations only if auto-collapse is enabled
+			if (autoCollapse) {
 				updateDecorations(editor);
 			}
 		}
