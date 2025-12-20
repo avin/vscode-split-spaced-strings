@@ -11,6 +11,8 @@ Toggle between single-line and multi-line string formats with a simple keyboard 
 - **Word-Per-Line Splitting**: Each word in the string gets its own line for better readability
 - **Preserves Indentation**: Maintains proper code indentation when splitting strings
 - **Reversible**: Toggle back and forth as many times as needed
+- **Auto-Collapse on Save**: Optional feature to automatically collapse split strings back to single line when saving (disabled by default)
+- **Visual Tracking**: Split strings are highlighted with a subtle background color to indicate they will be auto-collapsed on save
 
 ## Use Cases
 
@@ -37,6 +39,28 @@ Press `Alt+Shift+S` with your cursor inside any string literal.
 1. Go to `File` → `Preferences` → `Keyboard Shortcuts` (or press `Ctrl+K Ctrl+S`)
 2. Search for "Toggle Split/Merge String"
 3. Click on the current keybinding and assign your preferred shortcut
+
+## Settings
+
+### Auto-Collapse on Save
+
+By default, split strings remain in their multi-line format. However, you can enable automatic collapsing back to single line when saving the file:
+
+1. Open Settings (`Ctrl+,` or `Cmd+,`)
+2. Search for "Split Spaced Strings"
+3. Enable "Auto Collapse On Save"
+
+Or add to your `settings.json`:
+```json
+{
+  "splitSpacedStrings.autoCollapseOnSave": true
+}
+```
+
+When enabled:
+- Any string you split using `Alt+Shift+S` will be highlighted with a subtle yellow background
+- When you save the file (`Ctrl+S`), all highlighted strings will automatically collapse back to single line
+- This is useful for temporary formatting while editing, ensuring committed code stays compact
 
 ## Example
 ```tsx
@@ -66,3 +90,51 @@ Press `Alt+Shift+S` with your cursor inside any string literal.
 
 All string types work with both single-line and multi-line formats.
 
+## Smart Quote Conversion
+
+The extension intelligently handles quote types based on the programming language:
+
+### JavaScript / TypeScript / JSX / TSX
+- **On Split**: Converts `'` or `"` → `` ` `` (template literals) for proper multiline support
+- **On Merge**: Restores original quotes (`'` or `"`) if no template features are used
+- **Keeps backticks**: When template interpolation like `${...}` is detected
+- **JSX Attributes**: Preserves double quotes in JSX attributes (multiline is allowed)
+
+**Example:**
+```javascript
+// Original
+const msg = 'hello world test';
+
+// After split - uses backticks
+const msg = `
+  hello
+  world
+  test
+`;
+
+// After merge - restores single quotes
+const msg = 'hello world test';
+
+// With template interpolation - keeps backticks
+const msg = `hello ${name} test`; // Won't convert back to single quotes
+```
+
+### Python
+- **On Split**: Converts `'` or `"` to `"""` for multiline strings
+- **On Merge**: Restores original quotes if no interpolation features are used
+
+### Go
+- **On Split**: Converts `"` → `` ` `` (raw string literals)
+- **On Merge**: Restores `"` if no special features used
+
+### C#, Java, Kotlin
+- **On Split**: Converts `"` to `"""` for multiline strings
+- **On Merge**: Restores `"` if no special features are used
+
+### PHP, Ruby
+- Preserves original quote type
+- Detects variable interpolation (`$variable`, `#{...}`) and maintains appropriate quotes
+
+### Other Languages
+- Works with any language
+- Preserves original quote type by default
