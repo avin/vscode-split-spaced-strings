@@ -40,6 +40,43 @@
           "type": "boolean",
           "default": false,
           "description": "Automatically collapse split strings back to single line when saving the file"
+        },
+        "splitSpacedStrings.highlightBackgroundColor": {
+          "type": "string",
+          "default": "rgba(255, 200, 0, 0.1)",
+          "description": "Background color for highlighted split strings (CSS color format)"
+        },
+        "splitSpacedStrings.highlightBorderColor": {
+          "type": "string",
+          "default": "rgba(255, 200, 0, 0.3)",
+          "description": "Border color for highlighted split strings (CSS color format)"
+        },
+        "splitSpacedStrings.highlightBorderWidth": {
+          "type": "string",
+          "default": "1px",
+          "description": "Border width for highlighted split strings"
+        },
+        "splitSpacedStrings.highlightBorderStyle": {
+          "type": "string",
+          "default": "solid",
+          "enum": ["solid", "dashed", "dotted", "double", "none"],
+          "description": "Border style for highlighted split strings"
+        },
+        "splitSpacedStrings.overviewRulerColor": {
+          "type": "string",
+          "default": "rgba(255, 200, 0, 0.5)",
+          "description": "Color for the overview ruler markers (CSS color format)"
+        },
+        "splitSpacedStrings.overviewRulerLane": {
+          "type": "string",
+          "default": "right",
+          "enum": ["left", "center", "right", "full"],
+          "description": "Position of the overview ruler markers"
+        },
+        "splitSpacedStrings.highlightWholeLine": {
+          "type": "boolean",
+          "default": true,
+          "description": "Highlight the whole line or just the text range"
         }
       }
     }

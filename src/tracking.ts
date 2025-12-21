@@ -8,12 +8,31 @@ let decorationType: vscode.TextEditorDecorationType | null = null;
 let lastDecorationRanges: vscode.Range[] = [];
 
 export function createDecorationType(): vscode.TextEditorDecorationType {
+	const config = vscode.workspace.getConfiguration('splitSpacedStrings');
+	
+	const backgroundColor = config.get<string>('highlightBackgroundColor', 'rgba(255, 200, 0, 0.1)');
+	const borderColor = config.get<string>('highlightBorderColor', 'rgba(255, 200, 0, 0.3)');
+	const borderWidth = config.get<string>('highlightBorderWidth', '1px');
+	const borderStyle = config.get<string>('highlightBorderStyle', 'solid');
+	const overviewRulerColor = config.get<string>('overviewRulerColor', 'rgba(255, 200, 0, 0.5)');
+	const overviewRulerLaneStr = config.get<string>('overviewRulerLane', 'right');
+	const isWholeLine = config.get<boolean>('highlightWholeLine', true);
+	
+	const overviewRulerLaneMap: { [key: string]: vscode.OverviewRulerLane } = {
+		'left': vscode.OverviewRulerLane.Left,
+		'center': vscode.OverviewRulerLane.Center,
+		'right': vscode.OverviewRulerLane.Right,
+		'full': vscode.OverviewRulerLane.Full
+	};
+	
+	const overviewRulerLane = overviewRulerLaneMap[overviewRulerLaneStr] || vscode.OverviewRulerLane.Right;
+	
 	decorationType = vscode.window.createTextEditorDecorationType({
-		backgroundColor: 'rgba(255, 200, 0, 0.1)',
-		border: '1px solid rgba(255, 200, 0, 0.3)',
-		isWholeLine: true,
-		overviewRulerColor: 'rgba(255, 200, 0, 0.5)',
-		overviewRulerLane: vscode.OverviewRulerLane.Right
+		backgroundColor,
+		border: `${borderWidth} ${borderStyle} ${borderColor}`,
+		isWholeLine,
+		overviewRulerColor,
+		overviewRulerLane
 	});
 	return decorationType;
 }

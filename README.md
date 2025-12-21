@@ -62,6 +62,32 @@ When enabled:
 - When you save the file (`Ctrl+S`), all highlighted strings will automatically collapse back to single line
 - This is useful for temporary formatting while editing, ensuring committed code stays compact
 
+### Customizing Highlight Appearance
+
+You can customize how split strings are highlighted in the editor. All color values support CSS color formats (hex, rgba, etc.):
+
+```json
+{
+  "splitSpacedStrings.highlightBackgroundColor": "rgba(255, 200, 0, 0.1)",
+  "splitSpacedStrings.highlightBorderColor": "rgba(255, 200, 0, 0.3)",
+  "splitSpacedStrings.highlightBorderWidth": "1px",
+  "splitSpacedStrings.highlightBorderStyle": "solid",
+  "splitSpacedStrings.overviewRulerColor": "rgba(255, 200, 0, 0.5)",
+  "splitSpacedStrings.overviewRulerLane": "right",
+  "splitSpacedStrings.highlightWholeLine": true
+}
+```
+
+**Available Settings:**
+
+- **highlightBackgroundColor**: Background color for highlighted split strings (default: `rgba(255, 200, 0, 0.1)`)
+- **highlightBorderColor**: Border color for highlighted split strings (default: `rgba(255, 200, 0, 0.3)`)
+- **highlightBorderWidth**: Border width (default: `1px`)
+- **highlightBorderStyle**: Border style - `solid`, `dashed`, `dotted`, `double`, or `none` (default: `solid`)
+- **overviewRulerColor**: Color for markers in the editor scrollbar (default: `rgba(255, 200, 0, 0.5)`)
+- **overviewRulerLane**: Position of scrollbar markers - `left`, `center`, `right`, or `full` (default: `right`)
+- **highlightWholeLine**: Highlight the entire line width or just the text range (default: `true`)
+
 ## Example
 ```tsx
 // Before
