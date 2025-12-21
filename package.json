@@ -53,7 +53,7 @@
         },
         "splitSpacedStrings.highlightBorderWidth": {
           "type": "string",
-          "default": "1px",
+          "default": "0px",
           "description": "Border width for highlighted split strings"
         },
         "splitSpacedStrings.highlightBorderStyle": {

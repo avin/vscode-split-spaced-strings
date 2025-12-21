@@ -24,19 +24,6 @@ function matchQuoteToken(text: string, index: number, tokens: string[]): string 
 	return null;
 }
 
-function findClosingQuoteInLine(lineText: string, startIndex: number, quote: string): number {
-	if (quote.length === 1) {
-		for (let i = startIndex; i < lineText.length; i++) {
-			if (lineText[i] === quote && !isEscaped(lineText, i)) {
-				return i;
-			}
-		}
-		return -1;
-	}
-
-	return lineText.indexOf(quote, startIndex);
-}
-
 export function findQuotePositionInLine(
 	lineText: string,
 	quote: string,
@@ -92,163 +79,106 @@ export function findQuotePositionInLine(
 	return -1;
 }
 
-function findSingleLineStringAtCursor(document: vscode.TextDocument, position: vscode.Position): StringInfo | null {
-	const line = document.lineAt(position.line);
-	const lineText = line.text;
-	const cursorOffset = position.character;
-	const tokens = getQuoteTokens();
-
-	let i = 0;
-	while (i < lineText.length) {
-		const token = matchQuoteToken(lineText, i, tokens);
-		if (!token) {
-			i++;
-			continue;
-		}
-
-		if (token.length === 1 && isEscaped(lineText, i)) {
-			i++;
-			continue;
-		}
-
-		const end = findClosingQuoteInLine(lineText, i + token.length, token);
-		if (end === -1) {
-			i += token.length;
-			continue;
-		}
-
-		const closingTokenEnd = end + token.length - 1;
-		if (cursorOffset > i && cursorOffset <= closingTokenEnd) {
-			const content = lineText.substring(i + token.length, end);
-			return {
-				start: new vscode.Position(position.line, i),
-				end: new vscode.Position(position.line, end + token.length),
-				quote: token,
-				content,
-				isMultiline: false
-			};
-		}
-
-		i = end + token.length;
-	}
-
-	return null;
-}
-
-function findMultilineString(
+function findStringEnd(
 	document: vscode.TextDocument,
 	position: vscode.Position,
-	preferredQuote?: string
-): StringInfo | null {
-	const quotes = preferredQuote ? [preferredQuote] : getQuoteTokens();
-
-	for (const quote of quotes) {
-		const quoteLength = quote.length;
-		let startLine = position.line;
-		let startChar = -1;
-		let found = false;
-
-		for (let lineNum = position.line; lineNum >= 0; lineNum--) {
-			const lineText = document.lineAt(lineNum).text;
-			const maxIndex = lineText.length - quoteLength;
-			let iStart = maxIndex;
-			if (lineNum === position.line) {
-				iStart = Math.min(maxIndex, position.character - 1);
+	quote: string
+): vscode.Position | null {
+	const quoteLength = quote.length;
+	for (let lineNum = position.line; lineNum < document.lineCount; lineNum++) {
+		const lineText = document.lineAt(lineNum).text;
+		const startPos = lineNum === position.line ? position.character : 0;
+		for (let i = startPos; i <= lineText.length - quoteLength; i++) {
+			if (!lineText.startsWith(quote, i)) {
+				continue;
 			}
-
-			for (let i = iStart; i >= 0; i--) {
-				if (!lineText.startsWith(quote, i)) {
-					continue;
-				}
-				if (quoteLength === 1 && isEscaped(lineText, i)) {
-					continue;
-				}
-				startLine = lineNum;
-				startChar = i;
-				found = true;
-				break;
+			if (quoteLength === 1 && isEscaped(lineText, i)) {
+				continue;
 			}
-
-			if (found) {
-				break;
-			}
+			return new vscode.Position(lineNum, i);
 		}
-
-		if (!found || startChar === -1) {
-			continue;
-		}
-
-		let endLine = position.line;
-		let endChar = -1;
-		found = false;
-
-		for (let lineNum = startLine; lineNum < document.lineCount; lineNum++) {
-			const lineText = document.lineAt(lineNum).text;
-			const startPos = lineNum === startLine ? startChar + quoteLength : 0;
-
-			for (let i = startPos; i <= lineText.length - quoteLength; i++) {
-				if (!lineText.startsWith(quote, i)) {
-					continue;
-				}
-				if (quoteLength === 1 && isEscaped(lineText, i)) {
-					continue;
-				}
-				endLine = lineNum;
-				endChar = i;
-				found = true;
-				break;
-			}
-
-			if (found) {
-				break;
-			}
-		}
-
-		if (!found || endChar === -1) {
-			continue;
-		}
-
-		if (position.line < startLine || position.line > endLine) {
-			continue;
-		}
-		if (position.line === startLine && position.character <= startChar) {
-			continue;
-		}
-		if (position.line === endLine && position.character > endChar + quoteLength - 1) {
-			continue;
-		}
-
-		let content = '';
-		for (let lineNum = startLine; lineNum <= endLine; lineNum++) {
-			const lineText = document.lineAt(lineNum).text;
-			if (lineNum === startLine && lineNum === endLine) {
-				content = lineText.substring(startChar + quoteLength, endChar);
-			} else if (lineNum === startLine) {
-				content = lineText.substring(startChar + quoteLength) + '\n';
-			} else if (lineNum === endLine) {
-				content += lineText.substring(0, endChar);
-			} else {
-				content += lineText + '\n';
-			}
-		}
-
-		return {
-			start: new vscode.Position(startLine, startChar),
-			end: new vscode.Position(endLine, endChar + quoteLength),
-			quote,
-			content,
-			isMultiline: startLine !== endLine || content.includes('\n')
-		};
 	}
 
 	return null;
 }
 
 export function findStringAtCursor(document: vscode.TextDocument, position: vscode.Position): StringInfo | null {
-	const singleLine = findSingleLineStringAtCursor(document, position);
-	if (singleLine) {
-		return singleLine;
+	const tokens = getQuoteTokens();
+	let activeQuote: string | null = null;
+	let start: vscode.Position | null = null;
+
+	for (let lineNum = 0; lineNum <= position.line; lineNum++) {
+		const lineText = document.lineAt(lineNum).text;
+		const lineLimit = lineNum === position.line
+			? Math.min(position.character, lineText.length)
+			: lineText.length;
+		let i = 0;
+
+		while (i < lineLimit) {
+			if (!activeQuote) {
+				const token = matchQuoteToken(lineText, i, tokens);
+				if (!token) {
+					i++;
+					continue;
+				}
+				if (token.length === 1 && isEscaped(lineText, i)) {
+					i++;
+					continue;
+				}
+				activeQuote = token;
+				start = new vscode.Position(lineNum, i);
+				i += token.length;
+				continue;
+			}
+
+			if (lineText.startsWith(activeQuote, i)) {
+				if (activeQuote.length === 1 && isEscaped(lineText, i)) {
+					i++;
+					continue;
+				}
+				i += activeQuote.length;
+				activeQuote = null;
+				start = null;
+				continue;
+			}
+
+			i++;
+		}
 	}
 
-	return findMultilineString(document, position);
+	if (!activeQuote || !start) {
+		return null;
+	}
+
+	if (position.line === start.line && position.character <= start.character) {
+		return null;
+	}
+
+	const endPos = findStringEnd(document, position, activeQuote);
+	if (!endPos) {
+		return null;
+	}
+
+	const quoteLength = activeQuote.length;
+	let content = '';
+	for (let lineNum = start.line; lineNum <= endPos.line; lineNum++) {
+		const lineText = document.lineAt(lineNum).text;
+		if (lineNum === start.line && lineNum === endPos.line) {
+			content = lineText.substring(start.character + quoteLength, endPos.character);
+		} else if (lineNum === start.line) {
+			content = lineText.substring(start.character + quoteLength) + '\n';
+		} else if (lineNum === endPos.line) {
+			content += lineText.substring(0, endPos.character);
+		} else {
+			content += lineText + '\n';
+		}
+	}
+
+	return {
+		start,
+		end: new vscode.Position(endPos.line, endPos.character + quoteLength),
+		quote: activeQuote,
+		content,
+		isMultiline: start.line !== endPos.line || content.includes('\n')
+	};
 }
